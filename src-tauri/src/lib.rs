@@ -104,7 +104,7 @@ fn begin_recording(app: &AppHandle, settings: &settings::Settings) -> Result<(),
     let silence = Duration::from_millis(u64::from(settings.silence_ms.clamp(400, 10_000)));
     let max = Duration::from_secs(u64::from(settings.max_seconds.max(3)));
     std::thread::spawn(move || loop {
-        std::thread::sleep(Duration::from_millis(60));
+        std::thread::sleep(Duration::from_millis(45));
         let state = handle.state::<AppState>();
         if state.status() != Status::Recording {
             break; // parada externa (keyup / toggle)
