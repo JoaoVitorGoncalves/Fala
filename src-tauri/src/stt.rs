@@ -45,9 +45,17 @@ impl Transcriber {
     }
 
     /// Transcreve amostras f32 16 kHz mono. `language = "auto"` usa detecção automática.
-    pub fn transcribe(&self, samples: &[f32], model_path: &str, language: &str) -> Result<String, String> {
-        if samples.is_empty() {
-            return Err("Áudio vazio — nada capturado do microfone.".into());
+    /// `initial_prompt` (opcional) guia o modelo com vocabulário/estilo do usuário.
+    pub fn transcribe(
+        &self,
+        samples: &[f32],
+        model_path: &str,
+        language: &str,
+        initial_prompt: Option<&str>,
+    ) -> Result<String, String> {
+        let trimmed = trim_silence(samples);
+        if trimmed.is_empty() {
+            return Err("Áudio sem fala — só silêncio foi capturado.".into());
         }
         self.ensure_model(model_path)?;
         let mut guard = self.ctx.lock().map_err(|e| e.to_string())?;
@@ -64,9 +72,14 @@ impl Transcriber {
         if language != "auto" {
             params.set_language(Some(language));
         }
+        if let Some(p) = initial_prompt {
+            if !p.trim().is_empty() {
+                params.set_initial_prompt(p);
+            }
+        }
 
         state
-            .full(params, samples)
+            .full(params, trimmed)
             .map_err(|e| format!("whisper full: {e}"))?;
         let mut text = String::new();
         for i in 0..state.full_n_segments() {
@@ -80,8 +93,39 @@ impl Transcriber {
     }
 }
 
+/// Corta silêncio das pontas (50ms por chunk): elimina a matéria-prima das
+/// alucinações de fim de clipe ("Obrigado.", "Até logo.", etc.).
+fn trim_silence(samples: &[f32]) -> &[f32] {
+    const CHUNK: usize = 800; // 50 ms @16 kHz
+    const THRESH: f32 = 0.006;
+    let mut first: Option<usize> = None;
+    let mut last = 0usize;
+    for (i, chunk) in samples.chunks(CHUNK).enumerate() {
+        let sum_sq: f32 = chunk.iter().map(|s| s * s).sum();
+        let rms = (sum_sq / chunk.len().max(1) as f32).sqrt();
+        if rms > THRESH {
+            if first.is_none() {
+                first = Some(i);
+            }
+            last = i;
+        }
+    }
+    let Some(f) = first else {
+        return &[];
+    };
+    let start = f.saturating_sub(2) * CHUNK;
+    let end = ((last + 3) * CHUNK).min(samples.len());
+    &samples[start..end]
+}
+
 fn clean_text(raw: &str) -> String {
-    let t = raw.trim();
+    // remove reticências penduradas nas pontas (artefato comum do whisper)
+    let t = raw
+        .trim()
+        .trim_start_matches(['…', '.', ' '])
+        .trim_end_matches(['…', ' '])
+        .trim_end_matches("...")
+        .trim();
     // descarta saídas que são só marcadores de não-fala
     if t.is_empty()
         || t == "."

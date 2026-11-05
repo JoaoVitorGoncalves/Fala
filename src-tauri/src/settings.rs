@@ -23,6 +23,10 @@ pub struct Settings {
     pub max_seconds: u32,
     /// "clipboard" (colar via Cmd/Ctrl+V) ou "type" (digitar caractere a caractere)
     pub paste_mode: String,
+    /// Prompt inicial do whisper: vocabulário, nomes e termos que guião o reconhecimento
+    pub vocab_prompt: Option<String>,
+    /// Correções pós-transcrição, uma por linha: "errado = correto"
+    pub corrections: Option<String>,
 }
 
 impl Default for Settings {
@@ -37,6 +41,8 @@ impl Default for Settings {
             autostart: false,
             max_seconds: 120,
             paste_mode: "clipboard".into(),
+            vocab_prompt: None,
+            corrections: None,
         }
     }
 }

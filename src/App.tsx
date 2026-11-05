@@ -13,6 +13,8 @@ interface Settings {
   autostart: boolean;
   max_seconds: number;
   paste_mode: string;
+  vocab_prompt: string | null;
+  corrections: string | null;
 }
 
 interface SettingsInfo {
@@ -248,6 +250,30 @@ function App() {
             />
           </>
         )}
+      </section>
+
+      <section className="card">
+        <h2>Qualidade da transcrição</h2>
+        <p className="hint">
+          <b>Vocabulário</b>: nomes próprios e termos técnicos que o whisper costuma errar — eles
+          guiam o reconhecimento. <b>Correções</b>: trocas aplicadas ao texto final, uma por linha
+          no formato <code>errado = correto</code>.
+        </p>
+        <textarea
+          rows={3}
+          value={draft.vocab_prompt ?? ""}
+          onChange={(e) => patch({ vocab_prompt: e.target.value || null })}
+          placeholder="Vocabulário: ex. João Vitor, ZCode, whisper.cpp, Tauri, Barracuda…"
+          spellCheck={false}
+        />
+        <textarea
+          rows={3}
+          style={{ marginTop: 8 }}
+          value={draft.corrections ?? ""}
+          onChange={(e) => patch({ corrections: e.target.value || null })}
+          placeholder={"Correções: ex.\ntou gravando = tô gravando\nBala cuda = Barracuda"}
+          spellCheck={false}
+        />
       </section>
 
       <section className="card">

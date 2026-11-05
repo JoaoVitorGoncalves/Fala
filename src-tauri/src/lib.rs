@@ -181,6 +181,11 @@ fn stop_recording_and_transcribe(app: &AppHandle) {
     let model_path = settings.model_path.unwrap_or_default();
     let language = settings.language.clone();
     let paste_mode = settings.paste_mode.clone();
+    let vocab_prompt = settings
+        .vocab_prompt
+        .clone()
+        .filter(|p| !p.trim().is_empty());
+    let corrections = settings.corrections.clone();
 
     let app = app.clone(); // handle próprio para a thread de transcrição
     std::thread::spawn(move || {
@@ -188,7 +193,21 @@ fn stop_recording_and_transcribe(app: &AppHandle) {
         let result = app
             .state::<AppState>()
             .transcriber
-            .transcribe(&samples, &model_path, &language);
+            .transcribe(&samples, &model_path, &language, vocab_prompt.as_deref())
+            .map(|mut text| {
+                // correções automáticas do usuário: "errado = correto", uma por linha
+                if let Some(corr) = &corrections {
+                    for line in corr.lines() {
+                        let mut parts = line.splitn(2, '=');
+                        let from = parts.next().unwrap_or("").trim();
+                        let to = parts.next().unwrap_or("").trim();
+                        if !from.is_empty() {
+                            text = text.replace(from, to);
+                        }
+                    }
+                }
+                text
+            });
 
         let payload = match result {
             Ok(text) if text.is_empty() => {
