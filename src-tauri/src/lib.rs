@@ -7,8 +7,10 @@ mod settings;
 mod stt;
 
 use serde::Serialize;
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use device_query::DeviceQuery;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, RunEvent};
@@ -97,9 +99,11 @@ fn begin_recording(app: &AppHandle, settings: &settings::Settings) -> Result<(),
     hud_state(app, "recording", None);
     show_hud(app);
 
-    // thread de supervisão: emite níveis p/ o HUD e cuida do auto-stop
+    // thread de supervisão: emite níveis p/ o HUD, auto-stop por silêncio,
+    // timeout sem fala e tecla Esc para finalizar
     let handle = app.clone();
     let vad = vad;
+    let keyboard = device_query::DeviceState::new();
     let mode = settings.mode.clone();
     let silence = Duration::from_millis(u64::from(settings.silence_ms.clamp(400, 10_000)));
     let max = Duration::from_secs(u64::from(settings.max_seconds.max(3)));
@@ -112,11 +116,29 @@ fn begin_recording(app: &AppHandle, settings: &settings::Settings) -> Result<(),
         let rms = vad.current_rms();
         let _ = handle.emit("hud-level", rms);
         let elapsed = vad.started.elapsed();
+
+        // Esc em qualquer lugar finaliza a gravação (stop + transcrição)
+        if keyboard.get_keys().contains(&device_query::Keycode::Escape) {
+            eprintln!("[fala] Esc pressionado; finalizando gravação");
+            stop_recording_and_transcribe(&handle);
+            break;
+        }
+
         if elapsed > max {
             eprintln!("[fala] limite de {}s atingido; finalizando", max.as_secs());
             stop_recording_and_transcribe(&handle);
             break;
         }
+
+        // timeout sem fala: mic mudo/indisponível não pode deixar "ouvindo infinito"
+        if !vad.speech_seen.load(Ordering::Relaxed) && elapsed > NO_SPEECH_TIMEOUT {
+            eprintln!("[fala] {NO_SPEECH_TIMEOUT_SECS}s sem detectar fala; descartando gravação");
+            discard_recording(&handle);
+            hud_state(&handle, "error", Some("Nenhum áudio detectado — fale mais perto do microfone ou verifique o dispositivo nas configurações"));
+            schedule_hud_hide(&handle, 3000);
+            break;
+        }
+
         if mode == "toggle" {
             if let Some(sil) = vad.silence_since() {
                 if sil > silence {
@@ -131,6 +153,16 @@ fn begin_recording(app: &AppHandle, settings: &settings::Settings) -> Result<(),
         }
     });
     Ok(())
+}
+
+/// Encerra a gravação descartando o áudio (timeout sem fala).
+fn discard_recording(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    if let Some(recording) = state.recording.lock().unwrap().take() {
+        let _ = recording.recorder.stop(); // amostras vão fora
+    }
+    state.set_status(Status::Idle);
+    update_tray(app, Status::Idle, None);
 }
 
 fn stop_recording_and_transcribe(app: &AppHandle) {
@@ -254,6 +286,11 @@ fn stop_recording_and_transcribe(app: &AppHandle) {
 // ---------------------------------------------------------------- tray
 
 const TRAY_ID: &str = "fala-tray";
+
+/// Se nenhuma fala for detectada neste intervalo, a gravação é descartada
+/// (microfone mudo/indisponível não pode deixar o app "ouvindo infinito").
+const NO_SPEECH_TIMEOUT_SECS: u64 = 7;
+const NO_SPEECH_TIMEOUT: Duration = Duration::from_secs(NO_SPEECH_TIMEOUT_SECS);
 
 fn update_tray(app: &AppHandle, status: Status, tooltip_override: Option<&str>) {
     // NSStatusItem (tray) exige a main thread no macOS; esta função também é
