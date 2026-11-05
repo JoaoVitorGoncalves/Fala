@@ -11,7 +11,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{TrayIconBuilder, TrayIconEvent};
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter, Manager, RunEvent};
 use tauri_plugin_autostart::ManagerExt;
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutEvent, ShortcutState};
 
@@ -188,14 +188,9 @@ fn stop_recording_and_transcribe(app: &AppHandle) {
 const TRAY_ID: &str = "fala-tray";
 
 fn update_tray(app: &AppHandle, status: Status, tooltip_override: Option<&str>) {
-    let Some(tray) = app.tray_by_id(TRAY_ID) else {
-        return;
-    };
-    let _ = tray.set_title(match status {
-        Status::Idle => None,
-        Status::Recording => Some("● rec"),
-        Status::Transcribing => Some("… txt"),
-    });
+    // NSStatusItem (tray) exige a main thread no macOS; esta função também é
+    // chamada de threads de gravação/transcrição, então marshal para a principal.
+    let tray_app = app.clone();
     let tooltip: String = tooltip_override
         .map(str::to_string)
         .unwrap_or_else(|| match status {
@@ -203,7 +198,17 @@ fn update_tray(app: &AppHandle, status: Status, tooltip_override: Option<&str>) 
             Status::Recording => "Fala — gravando…".into(),
             Status::Transcribing => "Fala — transcrevendo…".into(),
         });
-    let _ = tray.set_tooltip(Some(&tooltip));
+    let _ = app.run_on_main_thread(move || {
+        let Some(tray) = tray_app.tray_by_id(TRAY_ID) else {
+            return;
+        };
+        let _ = tray.set_title(match status {
+            Status::Idle => None,
+            Status::Recording => Some("● rec"),
+            Status::Transcribing => Some("… txt"),
+        });
+        let _ = tray.set_tooltip(Some(&tooltip));
+    });
 }
 
 fn show_settings_window(app: &AppHandle) {
@@ -314,11 +319,6 @@ pub fn run() {
             open_accessibility_prefs,
         ])
         .setup(|app| {
-            // janela de configurações começa oculta: o app vive na bandeja
-            if let Some(win) = app.get_webview_window("settings") {
-                let _ = win.hide();
-            }
-
             let settings = settings::load(app.handle());
             app.manage(AppState {
                 recording: Mutex::new(None),
@@ -336,10 +336,13 @@ pub fn run() {
                 .tooltip("Fala — pronto")
                 .menu(&menu)
                 .show_menu_on_left_click(false)
-                .on_menu_event(|app, ev| match ev.id.as_ref() {
-                    "settings" => show_settings_window(app),
-                    "quit" => app.exit(0),
-                    _ => {}
+                .on_menu_event(|app, ev| {
+                    eprintln!("[fala] menu da bandeja: {}", ev.id.as_ref());
+                    match ev.id.as_ref() {
+                        "settings" => show_settings_window(app),
+                        "quit" => app.exit(0),
+                        _ => {}
+                    }
                 })
                 .on_tray_icon_event(|tray, ev| {
                     if let TrayIconEvent::Click {
@@ -348,6 +351,7 @@ pub fn run() {
                         ..
                     } = ev
                     {
+                        eprintln!("[fala] clique esquerdo na bandeja → configurações");
                         show_settings_window(tray.app_handle());
                     }
                 })
@@ -381,6 +385,12 @@ pub fn run() {
                 api.prevent_close();
             }
         })
-        .run(tauri::generate_context!())
-        .expect("erro ao rodar o aplicativo Fala");
+        .build(tauri::generate_context!())
+        .expect("erro ao construir o aplicativo Fala")
+        .run(|app, event| {
+            // reativar o app (clique no Dock) abre as configurações
+            if let RunEvent::Reopen { .. } = event {
+                show_settings_window(app);
+            }
+        });
 }

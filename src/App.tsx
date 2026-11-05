@@ -36,6 +36,62 @@ const STATUS_LABEL: Record<string, string> = {
   transcribing: "… Transcrevendo…",
 };
 
+// teclas que sozinhas não viram atalho (o macOS não registra modificador puro)
+const MODIFIER_CODES = new Set([
+  "AltLeft",
+  "AltRight",
+  "ControlLeft",
+  "ControlRight",
+  "MetaLeft",
+  "MetaRight",
+  "ShiftLeft",
+  "ShiftRight",
+]);
+
+/** Converte o atalho salvo ("alt+space") em rótulo legível com símbolos do Mac. */
+function prettyHotkey(hotkey: string): string {
+  const symbols: Record<string, string> = {
+    CTRL: "⌃ Ctrl",
+    CONTROL: "⌃ Ctrl",
+    ALT: "⌥ Option",
+    OPTION: "⌥ Option",
+    SHIFT: "⇧ Shift",
+    CMD: "⌘ Cmd",
+    COMMAND: "⌘ Cmd",
+    SUPER: "⌘ Cmd",
+    SPACE: "Espaço",
+    ENTER: "Enter",
+    TAB: "Tab",
+    BACKSPACE: "⌫",
+    DELETE: "⌦",
+    ARROWUP: "↑",
+    ARROWDOWN: "↓",
+    ARROWLEFT: "←",
+    ARROWRIGHT: "→",
+    COMMA: ",",
+    PERIOD: ".",
+    MINUS: "-",
+    EQUAL: "=",
+    SLASH: "/",
+    SEMICOLON: ";",
+    QUOTE: "'",
+    BACKQUOTE: "`",
+    BACKSLASH: "\\",
+    BRACKETLEFT: "[",
+    BRACKETRIGHT: "]",
+  };
+  return hotkey
+    .split("+")
+    .map((token) => {
+      const t = token.trim().toUpperCase();
+      if (symbols[t]) return symbols[t];
+      if (t.startsWith("KEY")) return t.slice(3);
+      if (t.startsWith("DIGIT")) return t.slice(5);
+      return token.trim();
+    })
+    .join(" + ");
+}
+
 function App() {
   const [info, setInfo] = useState<SettingsInfo | null>(null);
   const [draft, setDraft] = useState<Settings | null>(null);
@@ -43,6 +99,7 @@ function App() {
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lastTranscription, setLastTranscription] = useState<string | null>(null);
+  const [capturing, setCapturing] = useState(false);
 
   const load = useCallback(async () => {
     const i = await invoke<SettingsInfo>("get_settings");
@@ -78,6 +135,30 @@ function App() {
       un.then((f) => f());
     };
   }, [load]);
+
+  // captura do atalho: próxima combinação de teclas vira o atalho global
+  useEffect(() => {
+    if (!capturing) return;
+    const onKey = (e: KeyboardEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.key === "Escape") {
+        setCapturing(false);
+        return;
+      }
+      if (MODIFIER_CODES.has(e.code)) return; // espera uma tecla "de verdade"
+      const mods: string[] = [];
+      if (e.ctrlKey) mods.push("CTRL");
+      if (e.altKey) mods.push("ALT");
+      if (e.shiftKey) mods.push("SHIFT");
+      if (e.metaKey) mods.push("CMD");
+      const combo = [...mods, e.code.toUpperCase()].join("+");
+      setDraft((d) => (d ? { ...d, hotkey: combo } : d));
+      setCapturing(false);
+    };
+    window.addEventListener("keydown", onKey, { capture: true });
+    return () => window.removeEventListener("keydown", onKey, { capture: true });
+  }, [capturing]);
 
   async function save() {
     if (!draft) return;
@@ -132,15 +213,15 @@ function App() {
       <section className="card">
         <h2>Atalho global (push-to-talk)</h2>
         <p className="hint">
-          Segure para gravar, solte para transcrever e colar. Formato: modificadores + tecla, ex.{" "}
-          <code>alt+space</code>, <code>ctrl+shift+d</code>.
+          Segure para gravar, solte para transcrever e colar. Clique abaixo e pressione a
+          combinação que quiser — no Mac, a tecla <code>alt</code> é a <b>⌥ Option</b>.
         </p>
-        <input
-          value={draft.hotkey}
-          onChange={(e) => patch({ hotkey: e.target.value })}
-          placeholder="alt+space"
-          spellCheck={false}
-        />
+        <button
+          className={capturing ? "capturing" : "hotkey-box"}
+          onClick={() => setCapturing(true)}
+        >
+          {capturing ? "⌨️ Pressione a combinação… (Esc cancela)" : prettyHotkey(draft.hotkey)}
+        </button>
       </section>
 
       <section className="card">
