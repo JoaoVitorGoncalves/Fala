@@ -10,6 +10,7 @@
     "frontendDist": "../dist"
   },
   "app": {
+    "macOSPrivateApi": true,
     "windows": [
       {
         "label": "settings",
@@ -19,6 +20,20 @@
         "minWidth": 460,
         "minHeight": 620,
         "visible": true
+      },
+      {
+        "label": "hud",
+        "title": "Fala",
+        "width": 300,
+        "height": 96,
+        "visible": false,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "resizable": false,
+        "focus": false,
+        "shadow": false
       }
     ],
     "security": {

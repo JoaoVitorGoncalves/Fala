@@ -5,6 +5,8 @@ import "./App.css";
 
 interface Settings {
   hotkey: string;
+  mode: string;
+  silence_ms: number;
   language: string;
   device: string | null;
   model_path: string | null;
@@ -211,10 +213,10 @@ function App() {
       )}
 
       <section className="card">
-        <h2>Atalho global (push-to-talk)</h2>
+        <h2>Atalho global</h2>
         <p className="hint">
-          Segure para gravar, solte para transcrever e colar. Clique abaixo e pressione a
-          combinação que quiser — no Mac, a tecla <code>alt</code> é a <b>⌥ Option</b>.
+          Clique abaixo e pressione a combinação que quiser — no Mac, a tecla <code>alt</code> é a{" "}
+          <b>⌥ Option</b>.
         </p>
         <button
           className={capturing ? "capturing" : "hotkey-box"}
@@ -222,6 +224,30 @@ function App() {
         >
           {capturing ? "⌨️ Pressione a combinação… (Esc cancela)" : prettyHotkey(draft.hotkey)}
         </button>
+      </section>
+
+      <section className="card">
+        <h2>Modo de captura</h2>
+        <select value={draft.mode} onChange={(e) => patch({ mode: e.target.value })}>
+          <option value="toggle">Automático — aperta uma vez, para sozinho ao silenciar</option>
+          <option value="push">Push-to-talk — segure enquanto fala</option>
+        </select>
+        {draft.mode === "toggle" && (
+          <>
+            <p className="hint" style={{ marginTop: 10 }}>
+              Encerra sozinho após {(draft.silence_ms / 1000).toFixed(1)}s de silêncio (depois de
+              começar a falar)
+            </p>
+            <input
+              type="range"
+              min={600}
+              max={4000}
+              step={100}
+              value={draft.silence_ms}
+              onChange={(e) => patch({ silence_ms: Number(e.target.value) })}
+            />
+          </>
+        )}
       </section>
 
       <section className="card">

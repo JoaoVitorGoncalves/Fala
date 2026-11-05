@@ -3,9 +3,14 @@ use std::fs;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Settings {
-    /// Atalho global push-to-talk (formato tauri-plugin-global-shortcut, ex: "alt+space")
+    /// Atalho global (formato tauri-plugin-global-shortcut, ex: "alt+space")
     pub hotkey: String,
+    /// "toggle" = aperta uma vez, para sozinho no silêncio | "push" = segurar
+    pub mode: String,
+    /// (toggle) silêncio que encerra a gravação automaticamente, em ms
+    pub silence_ms: u32,
     /// Idioma de transcrição: "pt", "en", "auto", ...
     pub language: String,
     /// Nome do dispositivo de entrada; None = entrada padrão do sistema
@@ -24,6 +29,8 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             hotkey: "alt+space".into(),
+            mode: "toggle".into(),
+            silence_ms: 1500,
             language: "pt".into(),
             device: None,
             model_path: default_model_path(),

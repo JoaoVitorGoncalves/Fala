@@ -45,7 +45,6 @@ fn on_main<T: Send + 'static>(
     app: &AppHandle,
     f: impl FnOnce() -> T + Send + 'static,
 ) -> Result<T, String> {
-    use std::sync::mpsc;
     let (tx, rx) = std::sync::mpsc::channel();
     app.run_on_main_thread(move || {
         let _ = tx.send(f());
@@ -81,7 +80,7 @@ fn paste_via_clipboard(app: &AppHandle, text: &str) -> Result<(), String> {
 
     // pequena espera para o app alvo enxergar o clipboard antes do Cmd+V
     std::thread::sleep(Duration::from_millis(80));
-    on_main(app, paste_key_combo)?;
+    on_main(app, paste_key_combo).and_then(|r| r)?;
 
     // dá tempo do app alvo processar a colagem antes de restaurar
     std::thread::sleep(Duration::from_millis(300));
