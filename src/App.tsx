@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import type { CSSProperties } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import "./App.css";
@@ -35,9 +36,9 @@ const IDIOMAS = [
 ];
 
 const STATUS_LABEL: Record<string, string> = {
-  idle: "Pronto — segure o atalho para ditar",
-  recording: "● Gravando…",
-  transcribing: "… Transcrevendo…",
+  idle: "Pronto",
+  recording: "Gravando…",
+  transcribing: "Transcrevendo…",
 };
 
 // teclas que sozinhas não viram atalho (o macOS não registra modificador puro)
@@ -95,6 +96,44 @@ function prettyHotkey(hotkey: string): string {
     })
     .join(" + ");
 }
+
+/* glifos estilo SF Symbols (stroke, não emoji) */
+function Sym({ d, size = 16, sw = 1.8 }: { d: string[]; size?: number; sw?: number }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width={size}
+      height={size}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={sw}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      {d.map((p, i) => (
+        <path key={i} d={p} />
+      ))}
+    </svg>
+  );
+}
+
+const IC = {
+  command: ["M15 6v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3V6a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3"],
+  wave: ["M2 10v3", "M6 6v11", "M10 3v18", "M14 8v7", "M18 5v13", "M22 10v3"],
+  sparkles: [
+    "M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z",
+    "M20 3v4",
+    "M22 5h-4",
+  ],
+  globe: ["M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0", "M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20", "M2 12h20"],
+  mic: ["M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z", "M19 10v2a7 7 0 0 1-14 0v-2", "M12 19v3"],
+  cpu: ["M6 4h12a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z", "M10 9h4a1 1 0 0 1 1 1v4a1 1 0 0 1-1 1h-4a1 1 0 0 1-1-1v-4a1 1 0 0 1 1-1z", "M9 2v2", "M15 2v2", "M9 20v2", "M15 20v2", "M2 9h2", "M2 15h2", "M20 9h2", "M20 15h2"],
+  clipboard: ["M9 3h6a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1H9a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z", "M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"],
+  power: ["M12 2v10", "M18.4 6.6a9 9 0 1 1-12.77.04"],
+  timer: ["M12 22a8 8 0 1 0 0-16 8 8 0 0 0 0 16", "M10 2h4", "M12 14l3-3"],
+  alert: ["M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z", "M12 9v4", "M12 17h.01"],
+};
 
 function App() {
   const [info, setInfo] = useState<SettingsInfo | null>(null);
@@ -188,6 +227,7 @@ function App() {
   const isMac = navigator.userAgent.includes("Macintosh");
   const needsAccessibility = isMac && !info.accessibility;
   const valid = draft.hotkey.trim().length > 1 && (draft.model_path?.trim().length ?? 0) > 0;
+  const silencePct = ((draft.silence_ms - 600) / (4000 - 600)) * 100;
 
   function patch(p: Partial<Settings>) {
     setDraft({ ...draft!, ...p });
@@ -196,184 +236,298 @@ function App() {
   return (
     <main className="container">
       <header data-tauri-drag-region>
-        <h1>🎙️ Fala</h1>
-        <p className={info.status === "idle" ? "status idle" : "status active"}>
-          {STATUS_LABEL[info.status]}
-        </p>
+        <h1>Fala</h1>
+        <p className={`status status--${info.status}`}>{STATUS_LABEL[info.status]}</p>
       </header>
 
       {needsAccessibility && (
-        <section className="card warn">
-          <h2>⚠️ Permissão necessária</h2>
-          <p>
-            Para colar o texto no app em foco, o Fala precisa de <b>Acessibilidade</b>. Ative o Fala
-            em: Ajustes → Privacidade e Segurança → Acessibilidade. Clique abaixo para abrir e
-            depois volte aqui.
-          </p>
-          <button onClick={grantAccessibility}>Abrir Ajustes de Acessibilidade</button>
+        <section className="group">
+          <div className="card warn">
+            <div className="row">
+              <span className="row-icon t-orange">
+                <Sym d={IC.alert} />
+              </span>
+              <div className="row-col">
+                <span className="row-label">Permissão necessária</span>
+                <span className="row-sub">
+                  Para colar o texto no app em foco, ative o Fala em Ajustes → Privacidade e
+                  Segurança → Acessibilidade.
+                </span>
+              </div>
+            </div>
+            <div className="row">
+              <button onClick={grantAccessibility}>Abrir Ajustes de Acessibilidade</button>
+            </div>
+          </div>
         </section>
       )}
 
-      <section className="card">
+      <section className="group">
         <h2>Atalho global</h2>
-        <p className="hint">
-          Clique abaixo e pressione a combinação que quiser — no Mac, a tecla <code>alt</code> é a{" "}
-          <b>⌥ Option</b>.
-        </p>
-        <button
-          className={capturing ? "capturing" : "hotkey-box"}
-          onClick={() => setCapturing(true)}
-        >
-          {capturing ? "⌨️ Pressione a combinação… (Esc cancela)" : prettyHotkey(draft.hotkey)}
-        </button>
+        <div className="card">
+          <div className="row">
+            <span className="row-icon t-blue">
+              <Sym d={IC.command} />
+            </span>
+            <div className="row-col">
+              <span className="row-label">Atalho de ditado</span>
+              <span className="row-sub">
+                Clique na caixa e pressione a combinação — Esc cancela
+              </span>
+            </div>
+            <span className="row-end">
+              <button
+                className={capturing ? "hotkey-box capturing" : "hotkey-box"}
+                onClick={() => setCapturing(true)}
+              >
+                {capturing ? "Pressione…" : prettyHotkey(draft.hotkey)}
+              </button>
+            </span>
+          </div>
+          <p className="row-hint">
+            No Mac, a tecla <code>alt</code> é a ⌥ Option.
+          </p>
+        </div>
       </section>
 
-      <section className="card">
+      <section className="group">
         <h2>Modo de captura</h2>
-        <select value={draft.mode} onChange={(e) => patch({ mode: e.target.value })}>
-          <option value="toggle">Automático — aperta uma vez, para sozinho ao silenciar</option>
-          <option value="push">Push-to-talk — segure enquanto fala</option>
-        </select>
-        {draft.mode === "toggle" && (
-          <>
-            <p className="hint" style={{ marginTop: 10 }}>
-              Encerra sozinho após {(draft.silence_ms / 1000).toFixed(1)}s de silêncio (depois de
-              começar a falar)
-            </p>
-            <input
-              type="range"
-              min={600}
-              max={4000}
-              step={100}
-              value={draft.silence_ms}
-              onChange={(e) => patch({ silence_ms: Number(e.target.value) })}
-            />
-          </>
-        )}
+        <div className="card">
+          <div className="row">
+            <span className="row-icon t-indigo">
+              <Sym d={IC.wave} />
+            </span>
+            <div className="row-col">
+              <span className="row-label">Modo</span>
+              <span className="row-sub">
+                {draft.mode === "toggle"
+                  ? "Aperta uma vez; para sozinho ao silenciar"
+                  : "Segure enquanto fala"}
+              </span>
+            </div>
+            <span className="row-end">
+              <select value={draft.mode} onChange={(e) => patch({ mode: e.target.value })}>
+                <option value="toggle">Automático</option>
+                <option value="push">Push-to-talk</option>
+              </select>
+            </span>
+          </div>
+          {draft.mode === "toggle" && (
+            <div className="row">
+              <span className="row-label">Encerrar após silêncio</span>
+              <span className="row-end">
+                <input
+                  type="range"
+                  min={600}
+                  max={4000}
+                  step={100}
+                  value={draft.silence_ms}
+                  style={{ "--pct": `${silencePct}%` } as CSSProperties}
+                  onChange={(e) => patch({ silence_ms: Number(e.target.value) })}
+                />
+                <span className="row-value">
+                  {(draft.silence_ms / 1000).toFixed(1).replace(".", ",")} s
+                </span>
+              </span>
+            </div>
+          )}
+        </div>
       </section>
 
-      <section className="card">
+      <section className="group">
         <h2>Qualidade da transcrição</h2>
+        <div className="card">
+          <div className="row">
+            <span className="row-icon t-pink">
+              <Sym d={IC.sparkles} />
+            </span>
+            <span className="row-label">Vocabulário personalizado</span>
+          </div>
+          <div className="field-pad">
+            <textarea
+              rows={3}
+              value={draft.vocab_prompt ?? ""}
+              onChange={(e) => patch({ vocab_prompt: e.target.value || null })}
+              placeholder="Nomes e termos técnicos — ex. João Vitor, ZCode, whisper.cpp, Tauri…"
+              spellCheck={false}
+            />
+          </div>
+          <div className="row">
+            <span className="row-label">Correções automáticas</span>
+          </div>
+          <div className="field-pad">
+            <textarea
+              rows={3}
+              value={draft.corrections ?? ""}
+              onChange={(e) => patch({ corrections: e.target.value || null })}
+              placeholder={"Uma por linha:\ntou gravando = tô gravando\nBala cuda = Barracuda"}
+              spellCheck={false}
+            />
+          </div>
+        </div>
         <p className="hint">
-          <b>Vocabulário</b>: nomes próprios e termos técnicos que o whisper costuma errar — eles
-          guiam o reconhecimento. <b>Correções</b>: trocas aplicadas ao texto final, uma por linha
-          no formato <code>errado = correto</code>.
+          Correções no formato <code>errado = correto</code>, aplicadas ao texto final.
         </p>
-        <textarea
-          rows={3}
-          value={draft.vocab_prompt ?? ""}
-          onChange={(e) => patch({ vocab_prompt: e.target.value || null })}
-          placeholder="Vocabulário: ex. João Vitor, ZCode, whisper.cpp, Tauri, Barracuda…"
-          spellCheck={false}
-        />
-        <textarea
-          rows={3}
-          style={{ marginTop: 8 }}
-          value={draft.corrections ?? ""}
-          onChange={(e) => patch({ corrections: e.target.value || null })}
-          placeholder={"Correções: ex.\ntou gravando = tô gravando\nBala cuda = Barracuda"}
-          spellCheck={false}
-        />
       </section>
 
-      <section className="card">
-        <h2>Idioma da fala</h2>
-        <select
-          value={draft.language}
-          onChange={(e) => patch({ language: e.target.value })}
-        >
-          {IDIOMAS.map(([v, label]) => (
-            <option key={v} value={v}>
-              {label}
-            </option>
-          ))}
-        </select>
+      <section className="group">
+        <h2>Idioma</h2>
+        <div className="card">
+          <div className="row">
+            <span className="row-icon t-teal">
+              <Sym d={IC.globe} />
+            </span>
+            <span className="row-label">Idioma da fala</span>
+            <span className="row-end">
+              <select value={draft.language} onChange={(e) => patch({ language: e.target.value })}>
+                {IDIOMAS.map(([v, label]) => (
+                  <option key={v} value={v}>
+                    {label}
+                  </option>
+                ))}
+              </select>
+            </span>
+          </div>
+        </div>
       </section>
 
-      <section className="card">
+      <section className="group">
         <h2>Microfone</h2>
-        <select
-          value={draft.device ?? ""}
-          onChange={(e) => patch({ device: e.target.value || null })}
-        >
-          <option value="">Padrão do sistema (fone quando conectado)</option>
-          {devices.map((d) => (
-            <option key={d} value={d}>
-              {d}
-            </option>
-          ))}
-        </select>
+        <div className="card">
+          <div className="row">
+            <span className="row-icon t-red">
+              <Sym d={IC.mic} />
+            </span>
+            <span className="row-label">Entrada de áudio</span>
+            <span className="row-end">
+              <select
+                value={draft.device ?? ""}
+                onChange={(e) => patch({ device: e.target.value || null })}
+              >
+                <option value="">Padrão do sistema</option>
+                {devices.map((d) => (
+                  <option key={d} value={d}>
+                    {d}
+                  </option>
+                ))}
+              </select>
+            </span>
+          </div>
+        </div>
       </section>
 
-      <section className="card">
-        <h2>Modelo Whisper (local)</h2>
-        <p className="hint">
-          Caminho do arquivo <code>.bin</code> ggml. Deixe vazio e salve para voltar ao padrão
-          detectado.
-        </p>
-        <input
-          value={draft.model_path ?? ""}
-          onChange={(e) => patch({ model_path: e.target.value || null })}
-          placeholder="/caminho/para/ggml-…-q5_0.bin"
-          spellCheck={false}
-        />
+      <section className="group">
+        <h2>Modelo Whisper</h2>
+        <div className="card">
+          <div className="row">
+            <span className="row-icon t-purple">
+              <Sym d={IC.cpu} />
+            </span>
+            <div className="row-col">
+              <span className="row-label">Modelo local</span>
+              <span className="row-sub">Arquivo .bin ggml — vazio usa o padrão detectado</span>
+            </div>
+          </div>
+          <div className="field-pad">
+            <input
+              value={draft.model_path ?? ""}
+              onChange={(e) => patch({ model_path: e.target.value || null })}
+              placeholder="/caminho/para/ggml-…-q5_0.bin"
+              spellCheck={false}
+            />
+          </div>
+        </div>
       </section>
 
-      <section className="card">
+      <section className="group">
         <h2>Inserção do texto</h2>
-        <select
-          value={draft.paste_mode}
-          onChange={(e) => patch({ paste_mode: e.target.value })}
-        >
-          <option value="clipboard">Colar (clipboard) — rápido, recomendado</option>
-          <option value="type">Digitar caractere a caractere — mais compatível</option>
-        </select>
+        <div className="card">
+          <div className="row">
+            <span className="row-icon t-green">
+              <Sym d={IC.clipboard} />
+            </span>
+            <div className="row-col">
+              <span className="row-label">Entrega do texto</span>
+              <span className="row-sub">
+                {draft.paste_mode === "clipboard"
+                  ? "Cola via clipboard — rápido"
+                  : "Digita caractere a caractere — mais compatível"}
+              </span>
+            </div>
+            <span className="row-end">
+              <select
+                value={draft.paste_mode}
+                onChange={(e) => patch({ paste_mode: e.target.value })}
+              >
+                <option value="clipboard">Colar</option>
+                <option value="type">Digitar</option>
+              </select>
+            </span>
+          </div>
+        </div>
       </section>
 
-      <section className="card row">
-        <div>
-          <h2>Iniciar com o sistema</h2>
-          <p className="hint">Abre o Fala na bandeja ao fazer login.</p>
+      <section className="group">
+        <h2>Geral</h2>
+        <div className="card">
+          <div className="row">
+            <span className="row-icon t-gray">
+              <Sym d={IC.power} />
+            </span>
+            <div className="row-col">
+              <span className="row-label">Iniciar com o sistema</span>
+              <span className="row-sub">Abre o Fala na bandeja ao fazer login</span>
+            </div>
+            <span className="row-end">
+              <label className="switch">
+                <input
+                  type="checkbox"
+                  checked={draft.autostart}
+                  onChange={(e) => patch({ autostart: e.target.checked })}
+                />
+                <span />
+              </label>
+            </span>
+          </div>
+          <div className="row">
+            <span className="row-icon t-orange">
+              <Sym d={IC.timer} />
+            </span>
+            <div className="row-col">
+              <span className="row-label">Limite da gravação</span>
+              <span className="row-sub">Encerra caso o “soltar” se perca</span>
+            </div>
+            <span className="row-end">
+              <input
+                className="narrow"
+                type="number"
+                min={3}
+                max={300}
+                value={draft.max_seconds}
+                onChange={(e) => patch({ max_seconds: Number(e.target.value) || 120 })}
+              />
+              <span className="row-value">seg</span>
+            </span>
+          </div>
         </div>
-        <label className="switch">
-          <input
-            type="checkbox"
-            checked={draft.autostart}
-            onChange={(e) => patch({ autostart: e.target.checked })}
-          />
-          <span />
-        </label>
-      </section>
-
-      <section className="card row">
-        <div>
-          <h2>Limite da gravação</h2>
-          <p className="hint">Segurança caso o teclado engula o “soltar”.</p>
-        </div>
-        <input
-          className="narrow"
-          type="number"
-          min={3}
-          max={300}
-          value={draft.max_seconds}
-          onChange={(e) => patch({ max_seconds: Number(e.target.value) || 120 })}
-        />
       </section>
 
       {lastTranscription && (
-        <section className="card">
+        <section className="group">
           <h2>Última transcrição</h2>
-          <blockquote>“{lastTranscription}”</blockquote>
+          <div className="card">
+            <blockquote>“{lastTranscription}”</blockquote>
+          </div>
         </section>
       )}
 
       {error && <p className="error">{error}</p>}
 
       <footer>
+        <p className="footer-path">{info.config_path}</p>
         <button className="primary" disabled={!valid || saved} onClick={save}>
           {saved ? "Salvo ✓" : "Salvar"}
         </button>
-        <p className="hint">{info.config_path}</p>
       </footer>
     </main>
   );

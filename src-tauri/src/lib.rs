@@ -326,7 +326,7 @@ fn show_settings_window(app: &AppHandle) {
 // ---------------------------------------------------------------- HUD flutuante
 
 const HUD_W: f64 = 300.0;
-const HUD_H: f64 = 96.0;
+const HUD_H: f64 = 112.0;
 
 /// Mostra o HUD no centro-inferior da tela, SEM roubar o foco do app alvo
 /// (focusable=false → canBecomeKeyWindow=false → o paste continua indo certo).
