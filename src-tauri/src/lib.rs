@@ -44,6 +44,8 @@ struct AppState {
     recording: Mutex<Option<Recording>>,
     status: Mutex<Status>,
     transcriber: stt::Transcriber,
+    /// tentativas consecutivas sem fala (auto-cura pós-concessão de permissão)
+    no_speech_retries: std::sync::atomic::AtomicU32,
 }
 
 impl AppState {
@@ -147,11 +149,45 @@ fn begin_recording(app: &AppHandle, settings: &settings::Settings) -> Result<(),
             break;
         }
 
-        // timeout sem fala: mic mudo/indisponível não pode deixar "ouvindo infinito"
+        // timeout sem fala: mic mudo/indisponível não pode deixar "ouvindo infinito".
+        // 1ª ocorrência: reinicia a gravação (o stream pode ter nascido antes da
+        // concessão do TCC ficar ativa); 2ª consecutiva: descarta com aviso.
         if !vad.speech_seen.load(Ordering::Relaxed) && elapsed > NO_SPEECH_TIMEOUT {
-            eprintln!("[fala] {NO_SPEECH_TIMEOUT_SECS}s sem detectar fala; descartando gravação");
+            let retries = state
+                .no_speech_retries
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if retries < 1 {
+                eprintln!(
+                    "[fala] {}s sem fala; reiniciando a gravação (auto-cura, tentativa {})",
+                    NO_SPEECH_TIMEOUT_SECS,
+                    retries + 1
+                );
+                diag(&format!(
+                    "sem fala após {:.1}s; reiniciando gravação (tentativa {})",
+                    elapsed.as_secs_f32(),
+                    retries + 1
+                ));
+                if let Some(recording) = state.recording.lock().unwrap().take() {
+                    let _ = recording.recorder.stop();
+                }
+                state.set_status(Status::Idle);
+                let settings = state.settings.lock().unwrap().clone();
+                if let Err(e) = begin_recording(&handle, &settings) {
+                    hud_state(&handle, "error", Some(&e));
+                    schedule_hud_hide(&handle, 2400);
+                }
+                break;
+            }
+            eprintln!("[fala] 2ª tentativa sem fala; descartando");
+            diag("sem fala na 2ª tentativa; descartando gravação");
             discard_recording(&handle);
-            hud_state(&handle, "error", Some("Nenhum áudio detectado — fale mais perto do microfone ou verifique o dispositivo nas configurações"));
+            hud_state(
+                &handle,
+                "error",
+                Some(
+                    "Nenhum áudio detectado — fale mais perto do microfone ou troque o dispositivo nas configurações",
+                ),
+            );
             schedule_hud_hide(&handle, 3000);
             break;
         }
@@ -204,12 +240,12 @@ fn stop_recording_and_transcribe(app: &AppHandle) {
             return;
         }
     };
-    eprintln!(
-        "[fala] gravação: {:.1}s, {} amostras @16k ({:.2}s de áudio)",
+    diag(&format!(
+        "gravação: {:.1}s, {} amostras @16k ({:.2}s de áudio)",
         elapsed.as_secs_f32(),
         samples.len(),
         samples.len() as f32 / 16_000.0
-    );
+    ));
     // mapa de níveis (RMS por 2s) — mostra se o mic "morre" no meio do stream
     let níveis = audio::level_map(&samples, 16_000, 2);
     let mapa: Vec<String> = níveis
@@ -224,7 +260,7 @@ fn stop_recording_and_transcribe(app: &AppHandle) {
             }
         })
         .collect();
-    eprintln!("[fala] níveis (2s cada):{}", mapa.join(" |"));
+    diag(&format!("níveis (2s cada):{}", mapa.join(" |")));
 
     let settings = state.settings.lock().unwrap().clone();
     let model_path = settings.model_path.unwrap_or_default();
@@ -260,23 +296,26 @@ fn stop_recording_and_transcribe(app: &AppHandle) {
 
         let payload = match result {
             Ok(text) if text.is_empty() => {
-                eprintln!("[fala] transcrição vazia (áudio sem fala?)");
+                diag("transcrição vazia (áudio sem fala?)");
                 serde_json::json!({ "ok": false, "error": "Nada reconhecido — fale mais perto do microfone." })
             }
             Ok(text) => {
-                eprintln!(
-                    "[fala] transcrito em {:.2}s: {text}",
+                diag(&format!(
+                    "transcrito em {:.2}s: {text}",
                     started.elapsed().as_secs_f32()
-                );
+                ));
+                app.state::<AppState>()
+                    .no_speech_retries
+                    .store(0, std::sync::atomic::Ordering::Relaxed);
                 if let Err(e) = inject::paste_text(&app, &text, &paste_mode) {
-                    eprintln!("[fala] falha ao inserir texto: {e}");
+                    diag(&format!("falha ao inserir texto: {e}"));
                     serde_json::json!({ "ok": false, "error": format!("Falha ao colar: {e}"), "text": text })
                 } else {
                     serde_json::json!({ "ok": true, "text": text })
                 }
             }
             Err(e) => {
-                eprintln!("[fala] erro na transcrição: {e}");
+                diag(&format!("erro na transcrição: {e}"));
                 serde_json::json!({ "ok": false, "error": e })
             }
         };
@@ -303,6 +342,25 @@ fn stop_recording_and_transcribe(app: &AppHandle) {
 // ---------------------------------------------------------------- tray
 
 const TRAY_ID: &str = "fala-tray";
+
+/// Loga em stderr e em ~/.fala/fala.log (diagnóstico sem terminal).
+fn diag(msg: &str) {
+    eprintln!("[fala] {msg}");
+    if let Some(home) = std::env::var_os("HOME") {
+        let path = std::path::Path::new(&home).join(".fala/fala.log");
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+            use std::io::Write;
+            let ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let _ = writeln!(f, "[{ts}] {msg}");
+        }
+    }
+}
 
 /// Se nenhuma fala for detectada neste intervalo, a gravação é descartada
 /// (microfone mudo/indisponível não pode deixar o app "ouvindo infinito").
@@ -540,6 +598,7 @@ pub fn run() {
                 status: Mutex::new(Status::Idle),
                 transcriber: stt::Transcriber::new(),
                 settings: Mutex::new(settings.clone()),
+                no_speech_retries: std::sync::atomic::AtomicU32::new(0),
             });
 
             let show = MenuItem::with_id(app, "settings", "Configurações…", true, None::<&str>)?;
