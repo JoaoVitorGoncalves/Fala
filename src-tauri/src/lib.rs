@@ -103,7 +103,13 @@ fn begin_recording(app: &AppHandle, settings: &settings::Settings) -> Result<(),
     // timeout sem fala e tecla Esc para finalizar
     let handle = app.clone();
     let vad = vad;
-    let keyboard = device_query::DeviceState::new();
+    // device_query PANICA sem Acessibilidade (macos/mod.rs:122) — só cria o
+    // monitor de teclado se o status disser que temos a permissão, e cada uso
+    // passa por catch_unwind (a permissão pode sumir entre builds ad-hoc)
+    let mut keyboard: Option<device_query::DeviceState> = None;
+    if inject::accessibility_status() {
+        keyboard = std::panic::catch_unwind(device_query::DeviceState::new).ok();
+    }
     let mode = settings.mode.clone();
     let silence = Duration::from_millis(u64::from(settings.silence_ms.clamp(400, 10_000)));
     let max = Duration::from_secs(u64::from(settings.max_seconds.max(3)));
@@ -117,11 +123,22 @@ fn begin_recording(app: &AppHandle, settings: &settings::Settings) -> Result<(),
         let _ = handle.emit("hud-level", rms);
         let elapsed = vad.started.elapsed();
 
-        // Esc em qualquer lugar finaliza a gravação (stop + transcrição)
-        if keyboard.get_keys().contains(&device_query::Keycode::Escape) {
-            eprintln!("[fala] Esc pressionado; finalizando gravação");
-            stop_recording_and_transcribe(&handle);
-            break;
+        // Esc em qualquer lugar finaliza a gravação (stop + transcrição);
+        // re-tenta criar o monitor se a Acessibilidade foi concedida agora
+        if keyboard.is_none() && inject::accessibility_status() {
+            keyboard = std::panic::catch_unwind(device_query::DeviceState::new).ok();
+        }
+        if let Some(kb) = &keyboard {
+            let pressed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                kb.get_keys()
+            }));
+            if let Ok(keys) = pressed {
+                if keys.contains(&device_query::Keycode::Escape) {
+                    eprintln!("[fala] Esc pressionado; finalizando gravação");
+                    stop_recording_and_transcribe(&handle);
+                    break;
+                }
+            }
         }
 
         if elapsed > max {
