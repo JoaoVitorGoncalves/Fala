@@ -1,0 +1,38 @@
+[package]
+name = "fala"
+version = "0.1.0"
+description = "Fala — ditado local push-to-talk (macOS + Windows)"
+authors = ["João Vitor"]
+edition = "2024"
+
+[lib]
+name = "fala_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri-plugin-opener = "2"
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-autostart = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+cpal = "0.18"
+arboard = "3"
+enigo = "0.6"
+
+[dependencies.whisper-rs]
+version = "0.16"
+
+[target."cfg(target_os = \"macos\")".dependencies]
+whisper-rs = { version = "0.16", features = ["metal"] }
+
+# Read more about optimization here: https://tauri.app/concept/size/#cargo-configuration
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true
