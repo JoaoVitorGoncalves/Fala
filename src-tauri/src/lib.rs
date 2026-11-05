@@ -163,7 +163,7 @@ fn stop_recording_and_transcribe(app: &AppHandle) {
                     "[fala] transcrito em {:.2}s: {text}",
                     started.elapsed().as_secs_f32()
                 );
-                if let Err(e) = inject::paste_text(&text, &paste_mode) {
+                if let Err(e) = inject::paste_text(&app, &text, &paste_mode) {
                     eprintln!("[fala] falha ao inserir texto: {e}");
                     serde_json::json!({ "ok": false, "error": format!("Falha ao colar: {e}"), "text": text })
                 } else {
