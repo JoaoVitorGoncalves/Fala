@@ -14,12 +14,19 @@
     "windows": [
       {
         "label": "settings",
-        "title": "Fala — Configurações",
-        "width": 540,
-        "height": 760,
-        "minWidth": 460,
-        "minHeight": 620,
-        "visible": true
+        "title": "Fala",
+        "width": 560,
+        "height": 800,
+        "minWidth": 470,
+        "minHeight": 640,
+        "visible": true,
+        "transparent": true,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "windowEffects": {
+          "effects": ["sidebar"],
+          "state": "active"
+        }
       },
       {
         "label": "hud",
@@ -33,7 +40,11 @@
         "skipTaskbar": true,
         "resizable": false,
         "focus": false,
-        "shadow": false
+        "shadow": false,
+        "windowEffects": {
+          "effects": ["hudWindow"],
+          "state": "active"
+        }
       }
     ],
     "security": {

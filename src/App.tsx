@@ -195,7 +195,7 @@ function App() {
 
   return (
     <main className="container">
-      <header>
+      <header data-tauri-drag-region>
         <h1>🎙️ Fala</h1>
         <p className={info.status === "idle" ? "status idle" : "status active"}>
           {STATUS_LABEL[info.status]}
