@@ -473,6 +473,31 @@ fn open_accessibility_prefs() {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // panics vão para stderr E para ~/.fala/panic.log (apps LaunchServices não
+    // entregam stderr ao log unificado de forma confiável)
+    std::panic::set_hook(Box::new(|info| {
+        let msg = match info.location() {
+            Some(loc) => format!(
+                "[fala][PANIC] {info} ({}:{}:{})",
+                loc.file(),
+                loc.line(),
+                loc.column()
+            ),
+            None => format!("[fala][PANIC] {info}"),
+        };
+        eprintln!("{msg}");
+        if let Some(home) = std::env::var_os("HOME") {
+            let path = std::path::Path::new(&home).join(".fala/panic.log");
+            if let Some(dir) = path.parent() {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+                use std::io::Write;
+                let _ = writeln!(f, "{}", msg);
+            }
+        }
+    }));
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_autostart::init(

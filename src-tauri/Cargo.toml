@@ -35,5 +35,5 @@ whisper-rs = { version = "0.16", features = ["metal"] }
 codegen-units = 1
 lto = true
 opt-level = 3
-panic = "abort"
+panic = "unwind"
 strip = true
