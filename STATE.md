@@ -25,9 +25,10 @@ Stack: **Tauri 2 + Rust + React 19 + TS** (Vite), repo em `~/Projects/fala`, bun
 - `settings.rs` — JSON em app_config_dir, `#[serde(default)]`
 
 ## Pendências / issues abertas
-1. **Identidade de assinatura estável "Fala Dev"** — PENDENTE do usuário: Acesso às Chaves → Assistente de Certificados → Criar Certificado → nome `Fala Dev`, Raiz Autoassinada, tipo **Code Signing**. Motivo: assinatura ad-hoc muda por build → macOS esquece TCC (mic/Acessibilidade) a cada rebuild → prompts + falha de colagem. Depois de criada: `bash scripts/sign.sh` pós-build. (A importação via openssl+security CLI NÃO gera identidade utilizável no macOS 26 — testado.)
-2. **DESIGN (em andamento)** — visual atual "não parece nativo" segundo o usuário. Spec Apple-native via agente de design com skills (ver brief abaixo). Usuário pode fornecer imagens de referência.
-3. Fase 2: polimento IA (Ollama/cloud), streaming, ícone do app, assinatura Windows, auto-update.
+1. **Identidade estável "Fala Dev" — RESOLVIDA**: cert autoassinado criado via Certificate Assistant (GUI) no login keychain; `scripts/sign.sh` re-assina o bundle pós-build (assinar por NOME — `find-identity -p codesigning` não lista autoassinados, mas o codesign usa). PRIMEIRO uso: usuário concedeu mic/Acessibilidade uma última vez; agora persiste entre rebuilds. ⚠️ `pnpm tauri build` assina ad-hoc por cima → SEMPRE rodar `scripts/sign.sh` depois.
+2. **Crash device_query resolvido**: device_query faz `panic!` sem Acessibilidade (macos/mod.rs:122); monitor de teclado só é criado com permissão confirmada + `catch_unwind` em cada `get_keys()`.
+3. **DESIGN (implementado, aguardando validação)** — spec v2 do agente de design aplicada (`68fa96b`): lista agrupada inset, tokens do sistema, tiles SF Symbols, HUD cápsula. Usuário ainda não validou visualmente.
+4. Fase 2: polimento IA (Ollama/cloud), streaming, ícone do app, assinatura Windows, auto-update.
 
 ## Constraints técnicos que NÃO podem regredir
 - enigo/arboard/tray: sempre via `run_on_main_thread` onde indicado
