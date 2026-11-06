@@ -116,3 +116,9 @@ fn type_text(text: String) -> Result<(), String> {
     enigo.text(&text).map_err(|e| format!("enigo.text: {e}"))?;
     Ok(())
 }
+
+/// Digita `text` no app focado, a partir de qualquer thread (transcrição ao vivo).
+pub(crate) fn type_text_on_main(app: &AppHandle, text: &str) -> Result<(), String> {
+    let text = text.to_string();
+    on_main(app, move || type_text(text)).and_then(|r| r)
+}

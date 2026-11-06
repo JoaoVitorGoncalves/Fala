@@ -16,6 +16,8 @@ interface Settings {
   paste_mode: string;
   vocab_prompt: string | null;
   corrections: string | null;
+  live_transcribe: boolean;
+  live_model_path: string | null;
 }
 
 interface SettingsInfo {
@@ -23,6 +25,8 @@ interface SettingsInfo {
   config_path: string;
   status: "idle" | "recording" | "transcribing";
   accessibility: boolean;
+  live_model_available: boolean;
+  live_model_path: string;
 }
 
 const IDIOMAS = [
@@ -143,6 +147,8 @@ function App() {
   const [error, setError] = useState<string | null>(null);
   const [lastTranscription, setLastTranscription] = useState<string | null>(null);
   const [capturing, setCapturing] = useState(false);
+  // download do modelo rápido em andamento: bytes recebidos (null = parado)
+  const [dl, setDl] = useState<number | null>(null);
 
   const load = useCallback(async () => {
     const i = await invoke<SettingsInfo>("get_settings");
@@ -212,6 +218,39 @@ function App() {
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
     } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  // progresso do download do modelo rápido ({received} durante, {done} no fim)
+  useEffect(() => {
+    const un = listen<{ received?: number; done?: boolean; error?: string }>(
+      "model-download-progress",
+      (ev) => {
+        if (ev.payload.done !== undefined) {
+          setDl(null);
+          if (ev.payload.done) {
+            load().catch(() => {});
+          } else if (ev.payload.error) {
+            setError(ev.payload.error);
+          }
+        } else if (typeof ev.payload.received === "number") {
+          setDl(ev.payload.received);
+        }
+      },
+    );
+    return () => {
+      un.then((f) => f());
+    };
+  }, [load]);
+
+  async function downloadModel() {
+    setError(null);
+    setDl(0);
+    try {
+      await invoke("download_live_model");
+    } catch (e) {
+      setDl(null);
       setError(String(e));
     }
   }
@@ -367,6 +406,58 @@ function App() {
         </div>
         <p className="hint">
           Correções no formato <code>errado = correto</code>, aplicadas ao texto final.
+        </p>
+      </section>
+
+      <section className="group">
+        <h2>Transcrição em tempo real</h2>
+        <div className="card">
+          <div className="row">
+            <span className="row-icon t-indigo">
+              <Sym d={IC.wave} />
+            </span>
+            <div className="row-col">
+              <span className="row-label">Palavras ao vivo</span>
+              <span className="row-sub">
+                Cada pausa confirma o trecho falado direto no input — sem refazer
+                nada; só o final recebe uma revisão rápida
+              </span>
+            </div>
+            <span className="row-end">
+              <label className="switch">
+                <input
+                  type="checkbox"
+                  checked={draft.live_transcribe}
+                  onChange={(e) => patch({ live_transcribe: e.target.checked })}
+                />
+                <span />
+              </label>
+            </span>
+          </div>
+          <div className="row">
+            <span className="row-icon t-purple">
+              <Sym d={IC.cpu} />
+            </span>
+            <div className="row-col">
+              <span className="row-label">Modelo rápido</span>
+              <span className="row-sub">
+                {info.live_model_available
+                  ? "small-q5_1 disponível ✓"
+                  : dl !== null
+                    ? `Baixando… ${(dl / 1_000_000).toFixed(0)} MB`
+                    : "Necessário para o texto ao vivo (~181 MB, download único)"}
+              </span>
+            </div>
+            <span className="row-end">
+              {!info.live_model_available && dl === null && (
+                <button onClick={downloadModel}>Baixar modelo</button>
+              )}
+            </span>
+          </div>
+        </div>
+        <p className="hint">
+          Os trechos ao vivo usam um modelo pequeno e rápido; a revisão do
+          trecho final usa o modelo Whisper configurado acima.
         </p>
       </section>
 
