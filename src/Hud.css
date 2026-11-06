@@ -214,3 +214,19 @@ body,
 @media (prefers-reduced-motion: reduce) {
   * { animation: none !important; transition: none !important; }
 }
+
+/* ============================================================
+   Windows — material da cápsula (macOS intocado)
+   O Liquid Glass nativo não existe no Windows: a cápsula ficaria
+   invisível (só a hairline). O CSS passa a fornecer o material,
+   escuro como no macOS, sem alterar geometria ou tamanho do slot.
+   ============================================================ */
+
+html.win .hud::before {
+  background: rgba(28, 28, 30, 0.88);
+  border: 0.5px solid rgba(255, 255, 255, 0.16);
+  box-shadow:
+    0 10px 32px rgba(0, 0, 0, 0.38),
+    inset 0 0.5px 0 rgba(255, 255, 255, 0.22),
+    inset 0 -0.5px 0 rgba(0, 0, 0, 0.20);
+}
