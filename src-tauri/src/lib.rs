@@ -380,11 +380,19 @@ fn stop_recording_and_transcribe(app: &AppHandle) {
 
 const TRAY_ID: &str = "fala-tray";
 
+/// Home do usuário: HOME não existe no Windows quando o app é iniciado pelo
+/// Explorer; USERPROFILE cobre os dois sistemas.
+fn fala_home() -> Option<std::path::PathBuf> {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(std::path::PathBuf::from)
+}
+
 /// Loga em stderr e em ~/.fala/fala.log (diagnóstico sem terminal).
 fn diag(msg: &str) {
     eprintln!("[fala] {msg}");
-    if let Some(home) = std::env::var_os("HOME") {
-        let path = std::path::Path::new(&home).join(".fala/fala.log");
+    if let Some(home) = fala_home() {
+        let path = home.join(".fala/fala.log");
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
@@ -537,18 +545,18 @@ fn apply_shortcut(app: &AppHandle, hotkey: &str) -> Result<(), String> {
 }
 
 fn on_shortcut(app: &AppHandle, _shortcut: &Shortcut, event: ShortcutEvent) {
-    let mode = app
-        .state::<AppState>()
-        .settings
-        .lock()
-        .unwrap()
-        .mode
-        .clone();
+    // A UI/WebView2 pode entregar eventos antes do setup() concluir o
+    // app.manage(AppState); nesse intervalo o estado não existe ainda —
+    // ignore o evento em vez de abortar (panic em callback extern "system").
+    let Some(state) = app.try_state::<AppState>() else {
+        return;
+    };
+    let mode = state.settings.lock().unwrap().mode.clone();
     eprintln!("[fala] evento do atalho: {:?} (modo {mode})", event.state());
     match event.state() {
         ShortcutState::Pressed => match mode.as_str() {
             "toggle" => {
-                let status = app.state::<AppState>().status();
+                let status = state.status();
                 match status {
                     Status::Idle => start_recording(app),
                     Status::Recording => stop_recording_and_transcribe(app),
@@ -577,7 +585,9 @@ struct SettingsInfo {
 
 #[tauri::command]
 fn get_settings(app: AppHandle) -> Result<SettingsInfo, String> {
-    let state = app.state::<AppState>();
+    let Some(state) = app.try_state::<AppState>() else {
+        return Err("Fala ainda está inicializando; tente novamente".into());
+    };
     let settings = state.settings.lock().unwrap().clone();
     Ok(SettingsInfo {
         config_path: settings::config_path(&app)?.to_string_lossy().into_owned(),
@@ -589,6 +599,9 @@ fn get_settings(app: AppHandle) -> Result<SettingsInfo, String> {
 
 #[tauri::command]
 fn set_settings(app: AppHandle, settings: settings::Settings) -> Result<(), String> {
+    if app.try_state::<AppState>().is_none() {
+        return Err("Fala ainda está inicializando; tente novamente".into());
+    }
     settings::save(&app, &settings)?;
     {
         let state = app.state::<AppState>();
@@ -640,8 +653,8 @@ pub fn run() {
             None => format!("[fala][PANIC] {info}"),
         };
         eprintln!("{msg}");
-        if let Some(home) = std::env::var_os("HOME") {
-            let path = std::path::Path::new(&home).join(".fala/panic.log");
+        if let Some(home) = fala_home() {
+            let path = home.join(".fala/panic.log");
             if let Some(dir) = path.parent() {
                 let _ = std::fs::create_dir_all(dir);
             }
@@ -756,6 +769,8 @@ pub fn run() {
                     }
                 }
                 // Reativar o app (clique no Dock) abre as configurações.
+                // `RunEvent::Reopen` só existe no macOS; sem a cerca o Windows não compila.
+                #[cfg(target_os = "macos")]
                 RunEvent::Reopen { .. } => show_settings_window(app),
                 _ => {}
             }

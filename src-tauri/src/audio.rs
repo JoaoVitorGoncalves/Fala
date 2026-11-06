@@ -154,13 +154,23 @@ impl Recorder {
     }
 }
 
-/// downmix: média simples dos canais para mono
+/// downmix: média simples dos canais para mono.
+/// Drivers USB podem entregar NaN/Inf em glitchs; o whisper.cpp aborta com
+/// entrada não-finita (assert no ggml), então substituímos por silêncio.
 fn downmix(data: &[f32], channels: usize) -> Vec<f32> {
     if channels <= 1 {
-        return data.to_vec();
+        return data
+            .iter()
+            .map(|&v| if v.is_finite() { v } else { 0.0 })
+            .collect();
     }
     data.chunks(channels)
-        .map(|frame| frame.iter().sum::<f32>() / channels as f32)
+        .map(|frame| {
+            frame
+                .iter()
+                .fold(0.0f32, |acc, &v| if v.is_finite() { acc + v } else { acc })
+                / channels as f32
+        })
         .collect()
 }
 
@@ -202,7 +212,8 @@ pub fn resample_to_16k(input: &[f32], from_rate: u32) -> Vec<f32> {
         let i0 = pos.floor() as usize;
         let i1 = (i0 + 1).min(input.len() - 1);
         let frac = (pos - i0 as f64) as f32;
-        out.push(input[i0] * (1.0 - frac) + input[i1] * frac);
+        let v = input[i0] * (1.0 - frac) + input[i1] * frac;
+        out.push(if v.is_finite() { v } else { 0.0 });
     }
     out
 }
