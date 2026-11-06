@@ -63,22 +63,7 @@ impl Transcriber {
         let ctx = guard.as_mut().ok_or("contexto do whisper ausente")?;
         let mut state = ctx.create_state().map_err(|e| format!("create_state: {e}"))?;
 
-        let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
-        params.set_print_progress(false);
-        params.set_print_special(false);
-        params.set_print_realtime(false);
-        params.set_print_timestamps(false);
-        params.set_suppress_blank(true);
-        params.set_suppress_nst(true);
-        if language != "auto" {
-            params.set_language(Some(language));
-        }
-        if let Some(p) = initial_prompt {
-            if !p.trim().is_empty() {
-                params.set_initial_prompt(p);
-            }
-        }
-
+        let params = base_params(language, initial_prompt);
         state
             .full(params, trimmed)
             .map_err(|e| format!("whisper full: {e}"))?;
@@ -92,6 +77,29 @@ impl Transcriber {
         }
         Ok(clean_text(&text))
     }
+}
+
+/// Params base compartilhados entre o passe final e os trechos ao vivo.
+pub(crate) fn base_params<'a>(
+    language: &'a str,
+    initial_prompt: Option<&'a str>,
+) -> FullParams<'a, 'a> {
+    let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
+    params.set_print_progress(false);
+    params.set_print_special(false);
+    params.set_print_realtime(false);
+    params.set_print_timestamps(false);
+    params.set_suppress_blank(true);
+    params.set_suppress_nst(true);
+    if language != "auto" {
+        params.set_language(Some(language));
+    }
+    if let Some(p) = initial_prompt {
+        if !p.trim().is_empty() {
+            params.set_initial_prompt(p);
+        }
+    }
+    params
 }
 
 /// Corta silêncio das pontas (50ms por chunk): elimina a matéria-prima das

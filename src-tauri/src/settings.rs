@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -27,6 +27,10 @@ pub struct Settings {
     pub vocab_prompt: Option<String>,
     /// Correções pós-transcrição, uma por linha: "errado = correto"
     pub corrections: Option<String>,
+    /// Transcrição em tempo real: palavras surgem no input enquanto fala
+    pub live_transcribe: bool,
+    /// Modelo rápido (ggml) para as parciais ao vivo; None = usa o default detectável
+    pub live_model_path: Option<String>,
 }
 
 impl Default for Settings {
@@ -43,15 +47,42 @@ impl Default for Settings {
             paste_mode: "clipboard".into(),
             vocab_prompt: None,
             corrections: None,
+            live_transcribe: true,
+            live_model_path: None,
         }
     }
 }
+
+/// Nome do modelo rápido usado nas parciais em tempo real (baixável pelo app).
+/// small usa quantização q5_1 no repo whisper.cpp (q5_0 não existe → 404).
+pub const LIVE_MODEL_FILE: &str = "ggml-small-q5_1.bin";
+pub const LIVE_MODEL_BASE: &str = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main";
 
 /// Se o modelo do POC de voz já existir na máquina, usa como padrão (zero download).
 fn default_model_path() -> Option<String> {
     let candidates = [
         dirs_home()?.join(".zcode/voice-poc/models/ggml-large-v3-turbo-q5_0.bin"),
         dirs_home()?.join(".fala/models/ggml-large-v3-turbo-q5_0.bin"),
+    ];
+    candidates
+        .into_iter()
+        .find(|p| p.exists())
+        .map(|p| p.to_string_lossy().into_owned())
+}
+
+/// Resolve o modelo rápido efetivo: o configurado, ou o default se existir no
+/// disco (permite baixar pelo app sem editar settings).
+pub fn live_model_path_or_default(settings: &Settings) -> Option<String> {
+    if let Some(p) = &settings.live_model_path {
+        return if Path::new(p).exists() {
+            Some(p.clone())
+        } else {
+            None
+        };
+    }
+    let candidates = [
+        dirs_home()?.join(".fala/models").join(LIVE_MODEL_FILE),
+        dirs_home()?.join(".zcode/voice-poc/models").join(LIVE_MODEL_FILE),
     ];
     candidates
         .into_iter()
