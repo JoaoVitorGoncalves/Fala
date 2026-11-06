@@ -63,6 +63,16 @@ impl Transcriber {
         if trimmed.is_empty() {
             return Err("Áudio sem fala — só silêncio foi capturado.".into());
         }
+        // Defesa extra: amostras não-finitas fazem o whisper.cpp abortar (assert
+        // no ggml). A captura já sanitiza, mas qualquer NaN residual vira silêncio.
+        let needs_sanitize = trimmed.iter().any(|v| !v.is_finite());
+        let sanitized: Vec<f32>;
+        let trimmed: &[f32] = if needs_sanitize {
+            sanitized = trimmed.iter().map(|&v| if v.is_finite() { v } else { 0.0 }).collect();
+            &sanitized
+        } else {
+            trimmed
+        };
         self.ensure_model(model_path)?;
         let mut guard = self.ctx.lock().map_err(|e| e.to_string())?;
         let ctx = guard.as_mut().ok_or("contexto do whisper ausente")?;
