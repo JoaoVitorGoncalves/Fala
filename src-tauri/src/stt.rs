@@ -1,13 +1,16 @@
 use std::path::Path;
 use std::sync::Mutex;
 use whisper_rs::{
-    FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters,
+    FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters, WhisperState,
 };
 
 /// Transcritor local: carrega o modelo uma vez e reusa o contexto.
 pub struct Transcriber {
     ctx: Mutex<Option<WhisperContext>>,
     loaded_from: Mutex<Option<String>>,
+    /// Estado persistente reusado pelos decodes ao vivo (criar state por decode
+    /// custa caro). O passe final continua criando o seu por chamada.
+    live_state: Mutex<Option<WhisperState>>,
 }
 
 impl Transcriber {
@@ -15,6 +18,7 @@ impl Transcriber {
         Self {
             ctx: Mutex::new(None),
             loaded_from: Mutex::new(None),
+            live_state: Mutex::new(None),
         }
     }
 
@@ -32,9 +36,10 @@ impl Transcriber {
         let ctx = WhisperContext::new_with_params(
             model_path,
             WhisperContextParameters {
-                // whisper.cpp's Metal residency teardown can assert during
-                // macOS process exit; keep GPU acceleration on other platforms.
-                use_gpu: !cfg!(target_os = "macos"),
+                // Metal ativo (macOS): o teardown de residency do whisper.cpp
+                // dava assert no app.exit — mitigado vazando os contextos no
+                // shutdown (Transcriber::leak, chamado de request_shutdown).
+                use_gpu: true,
                 ..Default::default()
             },
         )
@@ -76,6 +81,55 @@ impl Transcriber {
             }
         }
         Ok(clean_text(&text))
+    }
+
+    /// Decode de um trecho ao vivo com o estado persistente (o contexto e o
+    /// state sobrevivem entre gravações — carregar modelo por gravação custaria
+    /// segundos). Sem trim_silence/clean_text: o live normaliza por conta própria.
+    pub fn decode_segment(
+        &self,
+        samples: &[f32],
+        model_path: &str,
+        language: &str,
+        initial_prompt: Option<&str>,
+    ) -> Result<String, String> {
+        self.ensure_model(model_path)?;
+        let mut guard = self.live_state.lock().map_err(|e| e.to_string())?;
+        if guard.is_none() {
+            let ctx_guard = self.ctx.lock().map_err(|e| e.to_string())?;
+            let ctx = ctx_guard.as_ref().ok_or("contexto do whisper ausente")?;
+            *guard = Some(ctx.create_state().map_err(|e| format!("create_state: {e}"))?);
+        }
+        let state = guard.as_mut().expect("live_state criado acima");
+        let params = base_params(language, initial_prompt);
+        state
+            .full(params, samples)
+            .map_err(|e| format!("whisper full: {e}"))?;
+        let mut text = String::new();
+        for i in 0..state.full_n_segments() {
+            if let Some(seg) = state.get_segment(i) {
+                if let Ok(s) = seg.to_str() {
+                    text.push_str(s);
+                }
+            }
+        }
+        Ok(text)
+    }
+
+    /// Vaza deliberadamente os contextos no shutdown: o teardown de residency
+    /// do Metal do whisper.cpp dá assert se o WhisperContext cai durante o
+    /// app.exit. O processo está saindo — o SO devolve a memória.
+    pub fn leak(&self) {
+        if let Ok(mut g) = self.live_state.lock() {
+            if let Some(s) = g.take() {
+                std::mem::forget(s);
+            }
+        }
+        if let Ok(mut g) = self.ctx.lock() {
+            if let Some(c) = g.take() {
+                std::mem::forget(c);
+            }
+        }
     }
 }
 

@@ -58,6 +58,16 @@ impl Default for Settings {
 pub const LIVE_MODEL_FILE: &str = "ggml-small-q5_1.bin";
 pub const LIVE_MODEL_BASE: &str = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main";
 
+/// Modelo Silero VAD (opcional, ~2 MB): refina as bordas dos trechos ao vivo.
+pub const VAD_MODEL_FILE: &str = "ggml-silero-v5.1.2.bin";
+
+/// Caminho do modelo VAD se presente no disco (o live funciona sem ele).
+pub fn vad_model_path() -> Option<String> {
+    let path = dirs_home()?.join(".fala/models").join(VAD_MODEL_FILE);
+    path.exists()
+        .then(|| path.to_string_lossy().into_owned())
+}
+
 /// Se o modelo do POC de voz já existir na máquina, usa como padrão (zero download).
 fn default_model_path() -> Option<String> {
     let candidates = [

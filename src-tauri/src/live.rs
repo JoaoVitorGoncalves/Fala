@@ -1,27 +1,29 @@
 // Transcrição em tempo real por COMMITS: cada pausa da fala fecha um trecho,
-// o trecho é decodificado UMA vez (modelo rápido) e digitado — é texto final,
-// nunca mais revisitado. Fala contínua força o fechamento num teto (corte no
-// ponto mais silencioso recente) para manter cada decode curto. Ao soltar o
-// atalho, só a cauda que ficou aberta é revisada pelo modelo grande (lib.rs).
-// Nada do que já foi digitado é apagado nem re-transcrito.
+// o trecho é decodificado UMA vez e digitado — é texto final, nunca mais
+// revisitado. Com Metal ativo (macOS) os trechos usam o MODELO GRANDE (a
+// latência fica abaixo do small-na-CPU da v1); sem GPU, o lib.rs aponta o
+// worker para o modelo rápido dedicado. Fala contínua força o fechamento num
+// teto (corte no ponto mais silencioso recente) para manter cada decode curto.
+// Ao soltar o atalho, só a cauda aberta é revisada (lib.rs). Nada do que já
+// foi digitado é apagado nem re-transcrito. O Silero VAD (opcional) refina as
+// bordas de cada trecho e descarta os sem fala nenhuma.
 
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager};
-use whisper_rs::{WhisperContext, WhisperContextParameters};
+use whisper_rs::{WhisperVadContext, WhisperVadContextParams, WhisperVadParams};
 
 use crate::audio::{self, RecorderHandle};
 use crate::inject;
-use crate::stt::base_params;
 use crate::{apply_corrections, diag, AppState, Status};
 
 const TICK: Duration = Duration::from_millis(120);
 /// Pausa que fecha um trecho e o confirma (bem abaixo do auto-stop `silence_ms`)
-const PAUSE: Duration = Duration::from_millis(700);
+const PAUSE: Duration = Duration::from_millis(400);
 /// Trecho mínimo para valer um decode; abaixo disso espera a próxima pausa
 const MIN_CHUNK_SAMPLES: usize = 9_600; // 0.6s @16 kHz
-/// Fala contínua: teto do trecho aberto (mantém o decode limitado e a digitação fluindo)
-const MAX_CHUNK_SAMPLES: usize = 9 * 16_000;
+/// Fala contínua: teto do trecho aberto (mantém cada decode curto e o texto fluindo)
+const MAX_CHUNK_SAMPLES: usize = 6 * 16_000;
 /// Silêncio à direita incluído no trecho fechado (borda limpa para o whisper)
 const TAIL_PAD_SAMPLES: usize = 4_000; // 0.25s @16 kHz
 /// RMS mínimo para considerar voz no tick (mesmo limiar do trim_silence)
@@ -70,34 +72,22 @@ fn run(
 ) -> LiveResult {
     let rate = audio_handle.sample_rate();
 
-    // contexto dedicado ao live (CPU, como o passe final no macOS — nada de Metal aqui)
-    let ctx = match WhisperContext::new_with_params(
-        model_path,
-        WhisperContextParameters {
-            use_gpu: false,
-            ..Default::default()
-        },
-    ) {
-        Ok(c) => c,
-        Err(e) => {
-            diag(&format!("live: falha ao carregar modelo rápido: {e}"));
-            return LiveResult {
-                committed_text: String::new(),
-                tail: Vec::new(),
-            };
+    // Silero VAD (opcional): refina bordas do trecho e pula decodes sem fala.
+    let mut vad = crate::settings::vad_model_path().and_then(|path| {
+        let mut params = WhisperVadContextParams::new();
+        params.set_use_gpu(false); // VAD é minúsculo — CPU sobra
+        match WhisperVadContext::new(&path, params) {
+            Ok(c) => Some(c),
+            Err(e) => {
+                diag(&format!("live: VAD indisponível ({e}); usando bordas por RMS"));
+                None
+            }
         }
-    };
-    let mut wstate = match ctx.create_state() {
-        Ok(s) => s,
-        Err(e) => {
-            diag(&format!("live: create_state: {e}"));
-            return LiveResult {
-                committed_text: String::new(),
-                tail: Vec::new(),
-            };
-        }
-    };
-    diag(&format!("live: ativo (modelo {model_path})"));
+    });
+    diag(&format!(
+        "live: ativo (modelo {model_path}, VAD: {})",
+        vad.is_some()
+    ));
 
     let mut native_cursor: usize = 0;
     let mut samples16k: Vec<f32> = Vec::new();
@@ -149,22 +139,36 @@ fn run(
         };
 
         let chunk = &samples16k[committed_until..boundary];
+
+        // VAD refina o trecho: corta silêncio das bordas e pula decodes sem
+        // fala nenhuma (menos palavras fantasmas e decode desperdiçado).
+        let speech = match vad.as_mut() {
+            Some(v) => match vad_span(v, chunk) {
+                VadSpan::NoSpeech => {
+                    diag("live: trecho sem fala (VAD); pulando decode");
+                    committed_until = boundary;
+                    continue;
+                }
+                VadSpan::Span(range) => &chunk[range],
+                VadSpan::Full => chunk,
+            },
+            None => chunk,
+        };
+
         let started = Instant::now();
         let prompt = chunk_prompt(&vocab_prompt, &committed_text);
-        let params = base_params(language, prompt.as_deref());
-        if let Err(e) = wstate.full(params, chunk) {
-            diag(&format!("live: decode do trecho falhou ({e}); cauda vai para a revisão final"));
-            break;
-        }
-        let mut raw = String::new();
-        for i in 0..wstate.full_n_segments() {
-            if let Some(seg) = wstate.get_segment(i) {
-                if let Ok(s) = seg.to_str() {
-                    raw.push_str(s);
-                }
+        let text = app
+            .state::<AppState>()
+            .transcriber
+            .decode_segment(speech, model_path, language, prompt.as_deref());
+        let text = match text {
+            Ok(t) => t,
+            Err(e) => {
+                diag(&format!("live: decode do trecho falhou ({e}); cauda vai para a revisão final"));
+                break;
             }
-        }
-        let text = apply_corrections(normalize_stream(&raw), &corrections);
+        };
+        let text = apply_corrections(normalize_stream(&text), &corrections);
         diag(&format!(
             "live: trecho confirmado em {:.2}s ({:.1}s de áudio): {text}",
             started.elapsed().as_secs_f32(),
@@ -205,6 +209,49 @@ fn run(
     LiveResult {
         committed_text,
         tail: samples16k[committed_until.min(samples16k.len())..].to_vec(),
+    }
+}
+
+/// Resultado do VAD sobre um trecho.
+enum VadSpan {
+    /// Nenhuma fala (silêncio/ruído): pula o decode
+    NoSpeech,
+    /// Intervalo de fala (amostras relativas ao trecho)
+    Span(std::ops::Range<usize>),
+    /// VAD falhou: decodifica o trecho inteiro
+    Full,
+}
+
+/// Ajusta o trecho à fala real detectada pelo Silero (fala já vem com pad de
+/// 60ms aplicado pelo próprio VAD).
+fn vad_span(vad: &mut WhisperVadContext, chunk: &[f32]) -> VadSpan {
+    let mut params = WhisperVadParams::new();
+    params.set_threshold(0.5);
+    params.set_min_speech_duration(250); // ms
+    params.set_min_silence_duration(100); // ms
+    params.set_max_speech_duration(30.0); // s (teto já dado pelo MAX_CHUNK)
+    params.set_speech_pad(60); // ms
+    let Ok(segments) = vad.segments_from_samples(params, chunk) else {
+        return VadSpan::Full;
+    };
+    let n = segments.num_segments();
+    if n <= 0 {
+        return VadSpan::NoSpeech;
+    }
+    let Some(first) = segments.get_segment_start_timestamp(0) else {
+        return VadSpan::Full;
+    };
+    let Some(last) = segments.get_segment_end_timestamp(n - 1) else {
+        return VadSpan::Full;
+    };
+    let start = (first * 16_000.0) as usize;
+    let end = (last * 16_000.0) as usize;
+    let start = start.min(chunk.len());
+    let end = end.clamp(start, chunk.len());
+    if end <= start {
+        VadSpan::Full
+    } else {
+        VadSpan::Span(start..end)
     }
 }
 

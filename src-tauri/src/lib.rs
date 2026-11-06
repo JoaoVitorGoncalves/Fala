@@ -129,10 +129,16 @@ fn begin_recording(app: &AppHandle, settings: &settings::Settings) -> Result<(),
 
     let vad = Arc::new(audio::VadState::new());
     let recorder = audio::Recorder::start(settings.device.as_deref(), vad.clone())?;
-    // transcrição em tempo real: worker próprio com modelo rápido dedicado,
-    // confirmando trechos a cada pausa. Sem modelo disponível (ou live
-    // desativado), a gravação segue como antes.
-    let live = match settings::live_model_path_or_default(settings) {
+    // transcrição em tempo real: worker próprio confirmando trechos a cada
+    // pausa. No macOS (Metal) os trechos usam o modelo grande — latência de
+    // small-na-CPU com precisão do large; em CPU pura (Windows), o modelo
+    // rápido dedicado. Sem modelo/sem live: gravação segue como antes.
+    let live_model = if cfg!(target_os = "macos") {
+        settings.model_path.clone()
+    } else {
+        settings::live_model_path_or_default(settings)
+    };
+    let live = match live_model {
         Some(path) if settings.live_transcribe => Some(live::spawn(
             app.clone(),
             recorder.handle(),
@@ -551,6 +557,10 @@ fn request_shutdown(app: &AppHandle) {
         let _ = recording.recorder.stop();
     }
     state.set_status(Status::Idle);
+    // O teardown de residency do Metal do whisper.cpp dá assert se o contexto
+    // cai durante o app.exit — vaza os contextos deliberadamente (o processo
+    // está saindo; o SO devolve a memória).
+    state.transcriber.leak();
     let _ = app.global_shortcut().unregister_all();
     hide_hud(app);
 
