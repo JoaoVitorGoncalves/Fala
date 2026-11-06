@@ -1,11 +1,25 @@
 /* ============================================================
-   Fala — HUD · material "hudWindow" (sempre escuro nos dois modos)
-   O CSS desenha só a aresta de vidro, o tint e a sombra;
-   o blur é o vibrancy do sistema. Sem backdrop-filter (no-op aqui).
-   Gravação: ribbon contínuo com gradiente da Siri (canvas em Hud.tsx).
+   Fala — HUD · Liquid Glass do macOS 26 (sempre escuro nos dois modos)
+   O material do sistema (liquidGlassRegular, radius 38 no conf) já vem
+   em forma de cápsula; o CSS só adiciona tint, aresta e reflexos.
+   A cápsula cobre a janela INTEIRA — nenhum retângulo sobrando.
    ============================================================ */
 
-:root { --ease-out: cubic-bezier(0.32, 0.72, 0, 1); }
+:root {
+  --ease-out: cubic-bezier(0.32, 0.72, 0, 1);
+  --hud-slot-w: 252px;
+  --hud-slot-h: 52px;
+}
+
+/* The HUD webview is a transparent, fixed-size surface over native Liquid Glass. */
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  min-width: 100%;
+  min-height: 100%;
+}
 
 .hud-body {
   background: transparent !important;
@@ -18,7 +32,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 24px 16px;                    /* folga da pílula dentro da janela */
+  overflow: hidden;
   color: rgba(255, 255, 255, 0.92);
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
   font-size: 13px;
@@ -26,93 +40,137 @@
   letter-spacing: 0.1px;
   user-select: none;
   cursor: default;
-  animation: hud-in 0.42s var(--ease-out) both;
-  transition: opacity 0.32s var(--ease-out), transform 0.32s var(--ease-out);
+  opacity: 1;
+  animation: hud-in 0.34s var(--ease-out) both;
+  transition: opacity 0.28s var(--ease-out);
 }
 
-/* pílula de vidro — cápsula, menor que a janela para a sombra respirar */
+/* Native Liquid Glass owns the surface; CSS only adds an almost invisible edge. */
 .hud::before {
   content: "";
   position: absolute;
-  inset: 24px 16px;
+  inset: 0;
   border-radius: 999px;
-  background: rgba(16, 16, 18, 0.28);    /* tint sutil sobre o hudWindow */
-  border: 0.5px solid rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.045);
+  border: 0.5px solid rgba(255, 255, 255, 0.22);
   box-shadow:
-    inset 0 0.5px 0 rgba(255, 255, 255, 0.28),   /* aresta superior */
-    inset 0 -0.5px 0 rgba(255, 255, 255, 0.05),  /* reflexo inferior */
-    0 8px 24px rgba(0, 0, 0, 0.32),
-    0 2px 6px rgba(0, 0, 0, 0.20);
+    inset 0 0.5px 0 rgba(255, 255, 255, 0.28),
+    inset 0 -0.5px 0 rgba(255, 255, 255, 0.06);
+  pointer-events: none;
 }
 
-/* saída suave (antes de o Rust esconder a janela) */
+/* Never scale the shell: scaling it reveals transparent/native margins. */
 .hud-leaving {
   opacity: 0;
-  transform: scale(0.96) translateY(4px);
+  transition: opacity 0.28s var(--ease-out);
 }
 
 @keyframes hud-in {
-  from { opacity: 0; transform: scale(0.95) translateY(8px); }
-  to   { opacity: 1; transform: scale(1) translateY(0); }
+  from { opacity: 0; }
+  to   { opacity: 1; }
 }
 
-/* conteúdo troca com fade a cada estado */
+/* One fixed visual slot prevents the capsule from appearing to contract between states. */
 .hud-content {
   position: relative;
-  display: flex;
-  align-items: center;
-  width: 100%;
-  animation: hud-fade 0.25s ease-out;
-}
-
-@keyframes hud-fade { from { opacity: 0; } to { opacity: 1; } }
-
-/* linhas de conteúdo: gravação alinhada à esquerda, demais centradas */
-.hud-row {
+  z-index: 1;
   display: flex;
   align-items: center;
   justify-content: center;
+  width: var(--hud-slot-w);
+  min-width: var(--hud-slot-w);
+  height: var(--hud-slot-h);
+  min-height: var(--hud-slot-h);
   gap: 12px;
-  width: 100%;
-  padding: 0 22px;
+  animation: hud-content-in 0.28s var(--ease-out) both;
 }
 
-.hud-row-rec { justify-content: flex-start; }
+@keyframes hud-content-in {
+  from { opacity: 0; transform: translateY(3px); filter: blur(2px); }
+  to   { opacity: 1; transform: translateY(0); filter: blur(0); }
+}
 
-/* --- gravando: ponto vermelho (systemRed) discreto + ribbon da Siri --- */
+/* State content enters without changing the native shell geometry. */
+.hud-content > * {
+  animation: hud-state-in 0.32s var(--ease-out) both;
+}
+
+@keyframes hud-state-in {
+  from { opacity: 0; transform: translateY(3px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* --- gravando: pulso vermelho (systemRed) + waveform branca --- */
 .hud-dot {
   flex: none;
   width: 8px;
   height: 8px;
   border-radius: 50%;
   background: #ff453a;
-  animation: hud-dot 2.4s ease-in-out infinite;
+  animation: hud-pulse 1.15s ease-in-out infinite;
 }
 
-@keyframes hud-dot {
-  0%, 100% { opacity: 1; }
-  50%      { opacity: 0.45; }
+@keyframes hud-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(255, 69, 58, 0.45); }
+  50%      { box-shadow: 0 0 0 6px rgba(255, 69, 58, 0); }
 }
 
-.hud-wave {
-  display: block;
-  flex: 1;
-  height: 40px;
-  min-width: 0;
+.hud-recording-content {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  gap: 10px;
 }
 
-/* --- transcrevendo: arco giratório (estilo spinner do sistema) --- */
+.hud-wave { display: block; width: 188px; height: 48px; }
+
+.hud-timer {
+  flex: 0 0 32px;
+  color: rgba(255, 255, 255, 0.68);
+  font: 500 10px/1 ui-monospace, "SF Mono", SFMono-Regular, Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.2px;
+  text-align: right;
+}
+
+/* The meter has a calm baseline while listening, never a dead/static gap. */
+.hud-recording .hud-wave { opacity: 0.98; }
+.hud-recording .hud-content::after {
+  content: "";
+  position: absolute;
+  inset: 5px 2px;
+  border-radius: 999px;
+  pointer-events: none;
+  background: linear-gradient(90deg, rgba(255,255,255,0.04), transparent 18%, transparent 82%, rgba(255,255,255,0.04));
+  opacity: 0.7;
+  animation: hud-scan 2.8s var(--ease-out) infinite;
+}
+
+@keyframes hud-scan {
+  0%, 100% { opacity: 0.25; transform: scaleX(0.96); }
+  50% { opacity: 0.72; transform: scaleX(1); }
+}
+
+/* --- transcrevendo --- */
+.hud-transcribing {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  color: rgba(255, 255, 255, 0.92);
+  letter-spacing: 0.2px;
+}
+
 .hud-spinner {
   flex: none;
   width: 15px;
   height: 15px;
   border-radius: 50%;
   background: conic-gradient(
-    rgba(255, 255, 255, 0.95) 0 80deg,
-    rgba(255, 255, 255, 0.16) 80deg 360deg
+    rgba(255, 255, 255, 0.95) 0 92deg,
+    rgba(255, 255, 255, 0.18) 92deg 360deg
   );
-  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 2.2px), #000 calc(100% - 1.8px));
-  mask: radial-gradient(farthest-side, transparent calc(100% - 2.2px), #000 calc(100% - 1.8px));
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 calc(100% - 1.6px));
+  mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 calc(100% - 1.6px));
   animation: hud-spin 0.9s linear infinite;
 }
 
@@ -120,42 +178,38 @@
 
 /* --- done: check systemGreen com pop --- */
 .hud-done {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
   color: #30d158;
   font-weight: 600;
-  animation: hud-fade 0.25s ease-out, hud-pop 0.5s cubic-bezier(0.34, 1.56, 0.64, 1);
+  animation: hud-pop 0.45s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
-.hud-done svg { flex: none; }
+.hud-done svg { flex: none; animation: hud-pop 0.5s cubic-bezier(0.34, 1.56, 0.64, 1); }
 
 @keyframes hud-pop {
-  0%   { transform: scale(0.86); }
-  100% { transform: scale(1); }
+  0%   { transform: scale(0.5); opacity: 0; }
+  100% { transform: scale(1); opacity: 1; }
 }
 
 /* --- erro --- */
 .hud-error {
-  font-size: 12px;
-  color: rgba(255, 255, 255, 0.85);
-  max-width: 100%;
-}
-
-.hud-err-text {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  max-width: 210px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.92);
 }
 
-.hud-error svg {
-  flex: none;
-  color: #ff9f0a;  /* systemOrange */
-}
+.hud-error svg { flex: none; color: #ff9f0a; }  /* systemOrange */
 
 /* --- idle --- */
-.hud-idle-label {
-  color: rgba(255, 255, 255, 0.62);
-  font-weight: 600;
-  letter-spacing: 0.3px;
-}
+.hud-idle .hud-content { color: rgba(255, 255, 255, 0.62); font-weight: 600; letter-spacing: 0.3px; }
 
 @media (prefers-reduced-motion: reduce) {
   * { animation: none !important; transition: none !important; }

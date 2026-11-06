@@ -7,7 +7,7 @@ mod settings;
 mod stt;
 
 use serde::Serialize;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use device_query::DeviceQuery;
@@ -37,6 +37,7 @@ impl Status {
 struct Recording {
     recorder: audio::Recorder,
     started: Instant,
+    hud_generation: u64,
 }
 
 struct AppState {
@@ -46,6 +47,11 @@ struct AppState {
     transcriber: stt::Transcriber,
     /// tentativas consecutivas sem fala (auto-cura pós-concessão de permissão)
     no_speech_retries: std::sync::atomic::AtomicU32,
+    /// Identifica a operação de gravação/transcrição que possui o HUD atual.
+    hud_generation: AtomicU64,
+    shutting_down: AtomicBool,
+    active_transcriptions: AtomicU32,
+    shutdown_waiter_started: AtomicBool,
 }
 
 impl AppState {
@@ -61,6 +67,9 @@ impl AppState {
 
 fn start_recording(app: &AppHandle) {
     let state = app.state::<AppState>();
+    if state.shutting_down.load(Ordering::Acquire) {
+        return;
+    }
     if state.status() != Status::Idle {
         return; // já gravando/transcrevendo
     }
@@ -70,11 +79,18 @@ fn start_recording(app: &AppHandle) {
         state.set_status(Status::Idle);
         update_tray(app, Status::Idle, Some(&format!("Fala — erro: {e}")));
         hud_state(app, "error", Some(&e));
+        show_hud(app);
+        schedule_hud_hide(app, 2200, state.hud_generation.load(Ordering::Relaxed));
     }
 }
 
 fn begin_recording(app: &AppHandle, settings: &settings::Settings) -> Result<(), String> {
     let state = app.state::<AppState>();
+    if state.shutting_down.load(Ordering::Acquire) {
+        return Err("o app está encerrando".into());
+    }
+    // Invalidate any older transcription/hide timer before starting a new session.
+    let generation = state.hud_generation.fetch_add(1, Ordering::Relaxed) + 1;
 
     match &settings.model_path {
         Some(p) if std::path::Path::new(p).exists() => {}
@@ -95,6 +111,7 @@ fn begin_recording(app: &AppHandle, settings: &settings::Settings) -> Result<(),
     *state.recording.lock().unwrap() = Some(Recording {
         recorder,
         started: Instant::now(),
+        hud_generation: generation,
     });
     state.set_status(Status::Recording);
     update_tray(app, Status::Recording, None);
@@ -118,6 +135,9 @@ fn begin_recording(app: &AppHandle, settings: &settings::Settings) -> Result<(),
     std::thread::spawn(move || loop {
         std::thread::sleep(Duration::from_millis(45));
         let state = handle.state::<AppState>();
+        if state.shutting_down.load(Ordering::Acquire) {
+            break;
+        }
         if state.status() != Status::Recording {
             break; // parada externa (keyup / toggle)
         }
@@ -174,7 +194,11 @@ fn begin_recording(app: &AppHandle, settings: &settings::Settings) -> Result<(),
                 let settings = state.settings.lock().unwrap().clone();
                 if let Err(e) = begin_recording(&handle, &settings) {
                     hud_state(&handle, "error", Some(&e));
-                    schedule_hud_hide(&handle, 2400);
+                    schedule_hud_hide(
+                        &handle,
+                        2400,
+                        state.hud_generation.load(Ordering::Relaxed),
+                    );
                 }
                 break;
             }
@@ -188,7 +212,11 @@ fn begin_recording(app: &AppHandle, settings: &settings::Settings) -> Result<(),
                     "Nenhum áudio detectado — fale mais perto do microfone ou troque o dispositivo nas configurações",
                 ),
             );
-            schedule_hud_hide(&handle, 3000);
+            schedule_hud_hide(
+                &handle,
+                3000,
+                state.hud_generation.load(Ordering::Relaxed),
+            );
             break;
         }
 
@@ -224,6 +252,8 @@ fn stop_recording_and_transcribe(app: &AppHandle) {
     let Some(recording) = recording else {
         return; // não estava gravando
     };
+    let generation = recording.hud_generation;
+    state.active_transcriptions.fetch_add(1, Ordering::AcqRel);
     state.set_status(Status::Transcribing);
     update_tray(app, Status::Transcribing, None);
     hud_state(app, "transcribing", None);
@@ -235,8 +265,9 @@ fn stop_recording_and_transcribe(app: &AppHandle) {
             eprintln!("[fala] falha ao encerrar gravação: {e}");
             state.set_status(Status::Idle);
             update_tray(app, Status::Idle, Some(&format!("Fala — erro: {e}")));
+            state.active_transcriptions.fetch_sub(1, Ordering::AcqRel);
             hud_state(app, "error", Some(&e));
-            schedule_hud_hide(app, 2200);
+            schedule_hud_hide(app, 2200, generation);
             return;
         }
     };
@@ -321,19 +352,25 @@ fn stop_recording_and_transcribe(app: &AppHandle) {
         };
 
         let state = app.state::<AppState>();
+        state.active_transcriptions.fetch_sub(1, Ordering::AcqRel);
+        // If another recording has already started, this worker is stale and
+        // must not overwrite its HUD or schedule a hide for the new session.
+        if state.hud_generation.load(Ordering::Relaxed) != generation {
+            return;
+        }
         state.set_status(Status::Idle);
         update_tray(&app, Status::Idle, None);
         let ok = payload.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
         if ok {
             hud_state(&app, "done", None);
-            schedule_hud_hide(&app, 1400);
+            schedule_hud_hide(&app, 1400, generation);
         } else {
             let msg = payload
                 .get("error")
                 .and_then(|v| v.as_str())
                 .unwrap_or("erro desconhecido");
             hud_state(&app, "error", Some(msg));
-            schedule_hud_hide(&app, 2400);
+            schedule_hud_hide(&app, 2400, generation);
         }
         let _ = app.emit("transcription", payload);
     });
@@ -400,8 +437,8 @@ fn show_settings_window(app: &AppHandle) {
 
 // ---------------------------------------------------------------- HUD flutuante
 
-const HUD_W: f64 = 300.0;
-const HUD_H: f64 = 112.0;
+const HUD_W: f64 = 320.0;
+const HUD_H: f64 = 84.0; // cápsula fixa do HUD público (radius 42 no conf)
 
 /// Mostra o HUD no centro-inferior da tela, SEM roubar o foco do app alvo
 /// (focusable=false → canBecomeKeyWindow=false → o paste continua indo certo).
@@ -429,6 +466,43 @@ fn hide_hud(app: &AppHandle) {
     }
 }
 
+fn request_shutdown(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    if state.shutting_down.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    state.hud_generation.fetch_add(1, Ordering::AcqRel);
+    if let Some(recording) = state.recording.lock().unwrap().take() {
+        let _ = recording.recorder.stop();
+    }
+    state.set_status(Status::Idle);
+    let _ = app.global_shortcut().unregister_all();
+    hide_hud(app);
+
+    // Whisper/Metal must not be dropped while a transcription worker is still
+    // using the persistent context. Defer the actual process exit until the
+    // worker has released its WhisperState and decremented this counter.
+    if state.active_transcriptions.load(Ordering::Acquire) == 0 {
+        app.exit(0);
+        return;
+    }
+    if state
+        .shutdown_waiter_started
+        .swap(true, Ordering::AcqRel)
+    {
+        return;
+    }
+    let handle = app.clone();
+    std::thread::spawn(move || loop {
+        let state = handle.state::<AppState>();
+        if state.active_transcriptions.load(Ordering::Acquire) == 0 {
+            handle.exit(0);
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    });
+}
+
 fn hud_state(app: &AppHandle, state: &str, message: Option<&str>) {
     let _ = app.emit(
         "hud-state",
@@ -436,11 +510,16 @@ fn hud_state(app: &AppHandle, state: &str, message: Option<&str>) {
     );
 }
 
-fn schedule_hud_hide(app: &AppHandle, after_ms: u64) {
+fn schedule_hud_hide(app: &AppHandle, after_ms: u64, generation: u64) {
     let handle = app.clone();
     std::thread::spawn(move || {
         std::thread::sleep(Duration::from_millis(after_ms));
-        hide_hud(&handle);
+        let state = handle.state::<AppState>();
+        if state.hud_generation.load(Ordering::Relaxed) == generation
+            && state.status() == Status::Idle
+        {
+            hide_hud(&handle);
+        }
     });
 }
 
@@ -599,6 +678,10 @@ pub fn run() {
                 transcriber: stt::Transcriber::new(),
                 settings: Mutex::new(settings.clone()),
                 no_speech_retries: std::sync::atomic::AtomicU32::new(0),
+                hud_generation: AtomicU64::new(0),
+                shutting_down: AtomicBool::new(false),
+                active_transcriptions: AtomicU32::new(0),
+                shutdown_waiter_started: AtomicBool::new(false),
             });
 
             let show = MenuItem::with_id(app, "settings", "Configurações…", true, None::<&str>)?;
@@ -614,7 +697,7 @@ pub fn run() {
                     eprintln!("[fala] menu da bandeja: {}", ev.id.as_ref());
                     match ev.id.as_ref() {
                         "settings" => show_settings_window(app),
-                        "quit" => app.exit(0),
+                        "quit" => request_shutdown(app),
                         _ => {}
                     }
                 })
@@ -662,9 +745,19 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("erro ao construir o aplicativo Fala")
         .run(|app, event| {
-            // reativar o app (clique no Dock) abre as configurações
-            if let RunEvent::Reopen { .. } = event {
-                show_settings_window(app);
+            match event {
+                // Cmd+Q, Dock quit, or another native exit request follows
+                // the same coordinated path as the tray's "Sair" action.
+                RunEvent::ExitRequested { api, .. } => {
+                    let state = app.state::<AppState>();
+                    if !state.shutting_down.load(Ordering::Acquire) {
+                        api.prevent_exit();
+                        request_shutdown(app);
+                    }
+                }
+                // Reativar o app (clique no Dock) abre as configurações.
+                RunEvent::Reopen { .. } => show_settings_window(app),
+                _ => {}
             }
         });
 }

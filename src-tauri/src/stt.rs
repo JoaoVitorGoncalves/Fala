@@ -32,8 +32,9 @@ impl Transcriber {
         let ctx = WhisperContext::new_with_params(
             model_path,
             WhisperContextParameters {
-                // GPU (Metal no macOS) quando disponível
-                use_gpu: true,
+                // whisper.cpp's Metal residency teardown can assert during
+                // macOS process exit; keep GPU acceleration on other platforms.
+                use_gpu: !cfg!(target_os = "macos"),
                 ..Default::default()
             },
         )
