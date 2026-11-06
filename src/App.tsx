@@ -151,7 +151,19 @@ function App() {
   }, []);
 
   useEffect(() => {
-    load().catch((e) => setError(String(e)));
+    // Com a WebView2 quente o primeiro get_settings pode chegar antes do
+    // backend concluir a inicialização; sem retry a tela ficava presa em
+    // "Carregando…" até o usuário arrastar a janela (foco reinvocava load).
+    let tentativas = 6;
+    const tentar = () =>
+      load().catch((e) => {
+        if (tentativas-- > 0) {
+          setTimeout(tentar, 150);
+        } else {
+          setError(String(e));
+        }
+      });
+    tentar();
     invoke<string[]>("list_devices")
       .then(setDevices)
       .catch(() => setDevices([]));

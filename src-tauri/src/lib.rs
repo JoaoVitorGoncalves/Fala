@@ -583,9 +583,22 @@ struct SettingsInfo {
     accessibility: bool,
 }
 
+/// Espera curta pelo estado (até ~2s): com a WebView2 quente a UI pode invocar
+/// comandos antes do setup() concluir o app.manage(). Falhar aqui deixa a tela
+/// presa em "Carregando…" — o erro não é exibido enquanto `info` está vazio.
+fn wait_state(app: &AppHandle) -> Option<tauri::State<'_, AppState>> {
+    for _ in 0..200 {
+        if let Some(state) = app.try_state::<AppState>() {
+            return Some(state);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    app.try_state::<AppState>()
+}
+
 #[tauri::command]
 fn get_settings(app: AppHandle) -> Result<SettingsInfo, String> {
-    let Some(state) = app.try_state::<AppState>() else {
+    let Some(state) = wait_state(&app) else {
         return Err("Fala ainda está inicializando; tente novamente".into());
     };
     let settings = state.settings.lock().unwrap().clone();
@@ -599,7 +612,7 @@ fn get_settings(app: AppHandle) -> Result<SettingsInfo, String> {
 
 #[tauri::command]
 fn set_settings(app: AppHandle, settings: settings::Settings) -> Result<(), String> {
-    if app.try_state::<AppState>().is_none() {
+    if wait_state(&app).is_none() {
         return Err("Fala ainda está inicializando; tente novamente".into());
     }
     settings::save(&app, &settings)?;
