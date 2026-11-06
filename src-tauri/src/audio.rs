@@ -48,6 +48,31 @@ impl VadState {
 
 use std::time::Duration;
 
+/// Acesso somente-leitura ao buffer de gravação para outras threads (worker de
+/// transcrição em tempo real) enquanto o stream continua capturando. O cpal
+/// Stream não atravessa threads com segurança, por isso o handle é separado.
+#[derive(Clone)]
+pub struct RecorderHandle {
+    buffer: Arc<Mutex<Vec<f32>>>,
+    rate: u32,
+}
+
+impl RecorderHandle {
+    /// Amostras novas (taxa nativa) desde o índice `from`, SEM drenar o buffer —
+    /// o consumo final (stop) continua intocado.
+    pub fn snapshot_since(&self, from: usize) -> Vec<f32> {
+        self.buffer
+            .lock()
+            .map(|b| b[from.min(b.len())..].to_vec())
+            .unwrap_or_default()
+    }
+
+    /// Taxa nativa do device (para reamostrar as parciais para 16 kHz).
+    pub fn sample_rate(&self) -> u32 {
+        self.rate
+    }
+}
+
 /// Gravador: abre o stream do microfone, acumula amostras f32 (taxa nativa do
 /// device) e, ao parar, devolve o áudio em 16 kHz mono. Alimenta o VAD.
 pub struct Recorder {
@@ -141,6 +166,14 @@ impl Recorder {
         })
     }
 
+    /// Handle compartilhável para o worker de transcrição em tempo real.
+    pub fn handle(&self) -> RecorderHandle {
+        RecorderHandle {
+            buffer: self.buffer.clone(),
+            rate: self.rate,
+        }
+    }
+
     /// Para a captura e devolve as amostras prontas para o whisper (16 kHz mono f32).
     pub fn stop(self) -> Result<Vec<f32>, String> {
         drop(self.stream); // encerra o stream antes de consumir o buffer
@@ -165,7 +198,7 @@ fn downmix(data: &[f32], channels: usize) -> Vec<f32> {
 }
 
 /// RMS (0..~1) de um trecho mono
-fn rms_of(data: &[f32]) -> f32 {
+pub(crate) fn rms_of(data: &[f32]) -> f32 {
     if data.is_empty() {
         return 0.0;
     }

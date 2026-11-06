@@ -9,6 +9,11 @@ Segure o atalho global → fale → solte → o texto (transcrito pelo whisper.c
 - Atalho global push-to-talk (configurável, padrão `alt+space`)
 - Whisper local (ggml), com aceleração Metal no macOS
 - Inserção por clipboard (com restauração) ou digitação sintética
+- **Transcrição em tempo real por commits**: cada pausa da fala fecha um trecho
+  que é decodificado uma única vez (modelo rápido `small-q5_1`) e digitado como
+  texto final — nada é apagado nem re-transcrito; ao soltar o atalho, só o
+  trecho que ficou aberto recebe a revisão rápida do modelo grande. Ative em
+  Configurações — o app oferece o download único do modelo rápido (~181 MB).
 - Tray com estados: pronto / ● rec / … txt
 - Configurações: atalho, idioma, microfone, modelo, limite de gravação, auto-start
 - Onboarding de permissões (Acessibilidade no macOS)
@@ -16,7 +21,6 @@ Segure o atalho global → fale → solte → o texto (transcrito pelo whisper.c
 ## Fase 2 (roadmap)
 
 - Polimento IA opcional (Ollama local ou API cloud): pontuação, listas, tons, dicionário pessoal
-- Transcrição em streaming (texto provisório enquanto fala)
 - Snippets por atalho falado, auto-update, assinatura de código no Windows
 
 ## Desenvolvimento
@@ -54,6 +58,7 @@ src-tauri/src/
 ├─ settings.rs  persistência (JSON em app_config_dir)
 ├─ audio.rs     cpal: captura do mic → 16 kHz mono (reamostragem linear)
 ├─ stt.rs       whisper-rs: contexto persistente, Metal no macOS
+├─ live.rs      transcrição em tempo real por commits (modelo rápido, trecho por pausa)
 └─ inject.rs    arboard (clipboard) + enigo (Cmd/Ctrl+V) com fallback de digitação
 ```
 

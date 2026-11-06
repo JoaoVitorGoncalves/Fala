@@ -3,6 +3,7 @@
 
 mod audio;
 mod inject;
+mod live;
 mod settings;
 mod stt;
 
@@ -18,7 +19,7 @@ use tauri_plugin_autostart::ManagerExt;
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutEvent, ShortcutState};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-enum Status {
+pub(crate) enum Status {
     Idle,
     Recording,
     Transcribing,
@@ -38,6 +39,8 @@ struct Recording {
     recorder: audio::Recorder,
     started: Instant,
     hud_generation: u64,
+    /// worker de transcrição em tempo real (None se desativado/sem modelo)
+    live: Option<std::thread::JoinHandle<live::LiveResult>>,
 }
 
 struct AppState {
@@ -52,15 +55,33 @@ struct AppState {
     shutting_down: AtomicBool,
     active_transcriptions: AtomicU32,
     shutdown_waiter_started: AtomicBool,
+    /// download do modelo rápido em andamento (evita downloads concorrentes)
+    live_download: AtomicBool,
 }
 
 impl AppState {
     fn set_status(&self, status: Status) {
         *self.status.lock().unwrap() = status;
     }
-    fn status(&self) -> Status {
+    pub(crate) fn status(&self) -> Status {
         *self.status.lock().unwrap()
     }
+}
+
+/// Correções automáticas do usuário: "errado = correto", uma por linha.
+/// Aplicadas a cada trecho confirmado e à revisão final da cauda.
+pub(crate) fn apply_corrections(mut text: String, corrections: &Option<String>) -> String {
+    if let Some(corr) = corrections {
+        for line in corr.lines() {
+            let mut parts = line.splitn(2, '=');
+            let from = parts.next().unwrap_or("").trim();
+            let to = parts.next().unwrap_or("").trim();
+            if !from.is_empty() {
+                text = text.replace(from, to);
+            }
+        }
+    }
+    text
 }
 
 // ---------------------------------------------------------------- ciclo push-to-talk
@@ -108,10 +129,32 @@ fn begin_recording(app: &AppHandle, settings: &settings::Settings) -> Result<(),
 
     let vad = Arc::new(audio::VadState::new());
     let recorder = audio::Recorder::start(settings.device.as_deref(), vad.clone())?;
+    // transcrição em tempo real: worker próprio confirmando trechos a cada
+    // pausa. No macOS (Metal) os trechos usam o modelo grande — latência de
+    // small-na-CPU com precisão do large; em CPU pura (Windows), o modelo
+    // rápido dedicado. Sem modelo/sem live: gravação segue como antes.
+    let live_model = if cfg!(target_os = "macos") {
+        settings.model_path.clone()
+    } else {
+        settings::live_model_path_or_default(settings)
+    };
+    let live = match live_model {
+        Some(path) if settings.live_transcribe => Some(live::spawn(
+            app.clone(),
+            recorder.handle(),
+            path,
+            settings.language.clone(),
+            settings.vocab_prompt.clone(),
+            settings.corrections.clone(),
+            generation,
+        )),
+        _ => None,
+    };
     *state.recording.lock().unwrap() = Some(Recording {
         recorder,
         started: Instant::now(),
         hud_generation: generation,
+        live,
     });
     state.set_status(Status::Recording);
     update_tray(app, Status::Recording, None);
@@ -253,6 +296,7 @@ fn stop_recording_and_transcribe(app: &AppHandle) {
         return; // não estava gravando
     };
     let generation = recording.hud_generation;
+    let live_handle = recording.live;
     state.active_transcriptions.fetch_add(1, Ordering::AcqRel);
     state.set_status(Status::Transcribing);
     update_tray(app, Status::Transcribing, None);
@@ -305,49 +349,86 @@ fn stop_recording_and_transcribe(app: &AppHandle) {
 
     let app = app.clone(); // handle próprio para a thread de transcrição
     std::thread::spawn(move || {
-        let started = Instant::now();
-        let result = app
-            .state::<AppState>()
-            .transcriber
-            .transcribe(&samples, &model_path, &language, vocab_prompt.as_deref())
-            .map(|mut text| {
-                // correções automáticas do usuário: "errado = correto", uma por linha
-                if let Some(corr) = &corrections {
-                    for line in corr.lines() {
-                        let mut parts = line.splitn(2, '=');
-                        let from = parts.next().unwrap_or("").trim();
-                        let to = parts.next().unwrap_or("").trim();
-                        if !from.is_empty() {
-                            text = text.replace(from, to);
-                        }
+        // Aguarda o worker ao vivo: trechos fechados já foram digitados como
+        // texto FINAL; sobrou apenas a cauda aberta para revisão.
+        let live = match live_handle {
+            Some(h) => match h.join() {
+                Ok(r) => r,
+                Err(_) => {
+                    diag("live: worker encerrou com panic; seguindo sem commits");
+                    live::LiveResult {
+                        committed_text: String::new(),
+                        tail: Vec::new(),
                     }
                 }
-                text
-            });
+            },
+            None => live::LiveResult {
+                committed_text: String::new(),
+                tail: Vec::new(),
+            },
+        };
+
+        let started = Instant::now();
+        // Revisão rápida: só a cauda aberta passa pelo modelo grande. Sem live
+        // (ou tudo já confirmado), a cauda é o ditado inteiro — comportamento
+        // clássico. Correções do usuário se aplicam ao resultado.
+        let result = if live.tail.is_empty() {
+            Ok(live.committed_text.clone())
+        } else {
+            app.state::<AppState>()
+                .transcriber
+                .transcribe(&live.tail, &model_path, &language, vocab_prompt.as_deref())
+                .map(|text| apply_corrections(text, &corrections))
+        };
 
         let payload = match result {
             Ok(text) if text.is_empty() => {
-                diag("transcrição vazia (áudio sem fala?)");
-                serde_json::json!({ "ok": false, "error": "Nada reconhecido — fale mais perto do microfone." })
+                if !live.committed_text.is_empty() {
+                    // a cauda era silêncio (ou nada reconhecido), mas os trechos
+                    // confirmados já estão no input — ditado bem-sucedido
+                    diag("cauda vazia/sem fala; mantendo trechos confirmados do live");
+                    app.state::<AppState>()
+                        .no_speech_retries
+                        .store(0, std::sync::atomic::Ordering::Relaxed);
+                    serde_json::json!({ "ok": true, "text": live.committed_text })
+                } else {
+                    diag("transcrição vazia (áudio sem fala?)");
+                    serde_json::json!({ "ok": false, "error": "Nada reconhecido — fale mais perto do microfone." })
+                }
             }
             Ok(text) => {
                 diag(&format!(
-                    "transcrito em {:.2}s: {text}",
+                    "revisão da cauda em {:.2}s: {text}",
                     started.elapsed().as_secs_f32()
                 ));
                 app.state::<AppState>()
                     .no_speech_retries
                     .store(0, std::sync::atomic::Ordering::Relaxed);
-                if let Err(e) = inject::paste_text(&app, &text, &paste_mode) {
-                    diag(&format!("falha ao inserir texto: {e}"));
-                    serde_json::json!({ "ok": false, "error": format!("Falha ao colar: {e}"), "text": text })
-                } else {
+                if live.tail.is_empty() {
+                    // tudo já foi digitado pelos commits ao vivo
                     serde_json::json!({ "ok": true, "text": text })
+                } else {
+                    // insere a cauda revisada — nada existente é apagado
+                    let sep = if live.committed_text.is_empty() { "" } else { " " };
+                    match inject::paste_text(&app, &format!("{sep}{text}"), &paste_mode) {
+                        Ok(()) => serde_json::json!({ "ok": true, "text": text }),
+                        Err(e) => {
+                            diag(&format!("falha ao inserir a cauda: {e}"));
+                            serde_json::json!({ "ok": false, "error": format!("Falha ao inserir: {e}"), "text": text })
+                        }
+                    }
                 }
             }
             Err(e) => {
-                diag(&format!("erro na transcrição: {e}"));
-                serde_json::json!({ "ok": false, "error": e })
+                if !live.committed_text.is_empty() {
+                    // a revisão da cauda falhou, mas os trechos confirmados já
+                    // estão no input — nada se perde
+                    diag(&format!("erro na revisão da cauda ({e}); mantendo trechos confirmados"));
+                    serde_json::json!({ "ok": true, "text": live.committed_text })
+                } else {
+                    diag(&format!("erro na transcrição: {e}"));
+                    serde_json::json!({ "ok": false, "error": e })
+                }
             }
         };
 
@@ -381,7 +462,7 @@ fn stop_recording_and_transcribe(app: &AppHandle) {
 const TRAY_ID: &str = "fala-tray";
 
 /// Loga em stderr e em ~/.fala/fala.log (diagnóstico sem terminal).
-fn diag(msg: &str) {
+pub(crate) fn diag(msg: &str) {
     eprintln!("[fala] {msg}");
     if let Some(home) = std::env::var_os("HOME") {
         let path = std::path::Path::new(&home).join(".fala/fala.log");
@@ -476,6 +557,10 @@ fn request_shutdown(app: &AppHandle) {
         let _ = recording.recorder.stop();
     }
     state.set_status(Status::Idle);
+    // O teardown de residency do Metal do whisper.cpp dá assert se o contexto
+    // cai durante o app.exit — vaza os contextos deliberadamente (o processo
+    // está saindo; o SO devolve a memória).
+    state.transcriber.leak();
     let _ = app.global_shortcut().unregister_all();
     hide_hud(app);
 
@@ -573,16 +658,23 @@ struct SettingsInfo {
     config_path: String,
     status: &'static str,
     accessibility: bool,
+    /// modelo rápido p/ transcrição ao vivo: existe no disco (configurado ou default)?
+    live_model_available: bool,
+    /// caminho resolvido do modelo rápido ("" se ausente)
+    live_model_path: String,
 }
 
 #[tauri::command]
 fn get_settings(app: AppHandle) -> Result<SettingsInfo, String> {
     let state = app.state::<AppState>();
     let settings = state.settings.lock().unwrap().clone();
+    let live_path = settings::live_model_path_or_default(&settings);
     Ok(SettingsInfo {
         config_path: settings::config_path(&app)?.to_string_lossy().into_owned(),
         status: state.status().as_str(),
         accessibility: inject::accessibility_status(),
+        live_model_available: live_path.is_some(),
+        live_model_path: live_path.unwrap_or_default(),
         settings,
     })
 }
@@ -611,6 +703,84 @@ fn set_settings(app: AppHandle, settings: settings::Settings) -> Result<(), Stri
 #[tauri::command]
 fn list_devices() -> Vec<String> {
     audio::list_input_devices()
+}
+
+/// Baixa o modelo rápido das parciais ao vivo (~181 MB) para ~/.fala/models via
+/// curl. Emite `model-download-progress {received}` durante e `{done, error?}`
+/// no fim. O .part quebra/mantém atomicidade: só o rename publica o modelo.
+#[tauri::command]
+fn download_live_model(app: AppHandle) -> Result<(), String> {
+    if app
+        .state::<AppState>()
+        .live_download
+        .swap(true, Ordering::AcqRel)
+    {
+        return Err("download já em andamento".into());
+    }
+    let Some(home) = std::env::var_os("HOME") else {
+        app.state::<AppState>().live_download.store(false, Ordering::Release);
+        return Err("variável HOME não definida".into());
+    };
+    let dir = std::path::Path::new(&home).join(".fala/models");
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        app.state::<AppState>().live_download.store(false, Ordering::Release);
+        return Err(format!("create_dir_all: {e}"));
+    }
+    let final_path = dir.join(settings::LIVE_MODEL_FILE);
+    if final_path.exists() {
+        app.state::<AppState>().live_download.store(false, Ordering::Release);
+        return Ok(());
+    }
+    let part_path = dir.join(format!("{}.part", settings::LIVE_MODEL_FILE));
+
+    // progresso: tamanho do .part enquanto o curl roda (metadata falhou = fim)
+    let prog_app = app.clone();
+    let prog_part = part_path.clone();
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_millis(400));
+        let Ok(meta) = std::fs::metadata(&prog_part) else {
+            break;
+        };
+        let _ = prog_app.emit(
+            "model-download-progress",
+            serde_json::json!({ "received": meta.len() }),
+        );
+    });
+
+    let dl_app = app.clone();
+    std::thread::spawn(move || {
+        let url = format!("{}/{}", settings::LIVE_MODEL_BASE, settings::LIVE_MODEL_FILE);
+        let outcome = (|| -> Result<(), String> {
+            let status = std::process::Command::new("curl")
+                .args(["-fL", "--retry", "3", "-o"])
+                .arg(&part_path)
+                .arg(&url)
+                .status()
+                .map_err(|e| format!("curl: {e}"))?;
+            if !status.success() {
+                return Err(format!("curl saiu com {status}"));
+            }
+            std::fs::rename(&part_path, &final_path).map_err(|e| format!("rename: {e}"))?;
+            Ok(())
+        })();
+        dl_app
+            .state::<AppState>()
+            .live_download
+            .store(false, Ordering::Release);
+        let payload = match outcome {
+            Ok(()) => {
+                diag("modelo rápido baixado");
+                serde_json::json!({ "done": true })
+            }
+            Err(e) => {
+                diag(&format!("download do modelo rápido falhou: {e}"));
+                let _ = std::fs::remove_file(&part_path); // .part quebrado não fica
+                serde_json::json!({ "done": false, "error": e })
+            }
+        };
+        let _ = dl_app.emit("model-download-progress", payload);
+    });
+    Ok(())
 }
 
 #[tauri::command]
@@ -669,6 +839,7 @@ pub fn run() {
             list_devices,
             accessibility_status,
             open_accessibility_prefs,
+            download_live_model,
         ])
         .setup(|app| {
             let settings = settings::load(app.handle());
@@ -682,6 +853,7 @@ pub fn run() {
                 shutting_down: AtomicBool::new(false),
                 active_transcriptions: AtomicU32::new(0),
                 shutdown_waiter_started: AtomicBool::new(false),
+                live_download: AtomicBool::new(false),
             });
 
             let show = MenuItem::with_id(app, "settings", "Configurações…", true, None::<&str>)?;
