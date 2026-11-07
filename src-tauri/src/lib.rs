@@ -118,11 +118,29 @@ fn polish_tail(app: &AppHandle, generation: u64, text: String) -> String {
     let started = Instant::now();
     match llm::polish(&ai, &sys, &text) {
         Ok(p) if !p.trim().is_empty() => {
-            diag(&format!(
-                "polimento IA em {:.2}s: {p}",
-                started.elapsed().as_secs_f32()
-            ));
-            p
+            // Salvaguarda determinística: correção legítima tem tamanho ~igual
+            // ao ditado. Saída muito maior (ou com markdown que o ditado não
+            // tinha) é o modelo RESPONDENDO/completando um fragmento — descarta.
+            let inp = text.chars().count();
+            let out = p.chars().count();
+            let tem_lista = |t: &str| {
+                t.lines().any(|l| {
+                    let l = l.trim_start();
+                    l.starts_with("- ") || l.starts_with("* ") || l.starts_with("• ")
+                })
+            };
+            if out > inp * 2 + 30 || (tem_lista(&p) && !tem_lista(&text)) {
+                diag(&format!(
+                    "polimento IA descartado (resposta, não correção): {p}"
+                ));
+                text
+            } else {
+                diag(&format!(
+                    "polimento IA em {:.2}s: {p}",
+                    started.elapsed().as_secs_f32()
+                ));
+                p
+            }
         }
         Ok(_) => {
             diag("polimento IA retornou vazio; mantendo o texto bruto");
@@ -180,6 +198,10 @@ fn begin_recording(app: &AppHandle, settings: &settings::Settings) -> Result<(),
 
     let vad = Arc::new(audio::VadState::new());
     let recorder = audio::Recorder::start(settings.device.as_deref(), vad.clone())?;
+    diag(&format!(
+        "gravando em: {}",
+        settings.device.as_deref().unwrap_or("entrada padrão do sistema")
+    ));
     // transcrição em tempo real: worker próprio confirmando trechos a cada
     // pausa. No macOS (Metal) os trechos usam o modelo grande — latência de
     // small-na-CPU com precisão do large; em CPU pura (Windows), o modelo
@@ -387,6 +409,15 @@ fn stop_recording_and_transcribe(app: &AppHandle) {
         })
         .collect();
     diag(&format!("níveis (2s cada):{}", mapa.join(" |")));
+    // "silêncio digital" nos últimos 4s: ~100% = o stream entregou zeros
+    // (trava do dispositivo/BT) mesmo com o usuário falando; ruído ambiente
+    // real fica bem abaixo disso.
+    let cauda = &samples[samples.len().saturating_sub(64_000)..];
+    let zeros = cauda.iter().filter(|s| s.abs() < 1e-4).count();
+    diag(&format!(
+        "silêncio digital nos últimos 4s: {:.0}%",
+        zeros as f32 / cauda.len().max(1) as f32 * 100.0
+    ));
 
     let settings = state.settings.lock().unwrap().clone();
     let model_path = settings.model_path.unwrap_or_default();
