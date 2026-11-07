@@ -52,6 +52,11 @@ EOF
 systemctl daemon-reload
 systemctl enable --now ollama
 systemctl restart ollama
+# o bind da porta leva ~1-2s — sem este wait, o pull logo abaixo dá "could not connect"
+for _ in $(seq 1 30); do
+  curl -sf http://127.0.0.1:11434/ >/dev/null 2>&1 && break
+  sleep 1
+done
 
 echo "==> Baixando modelo $MODEL (CPU do servidor; pode demorar alguns minutos)"
 ollama pull "$MODEL"
