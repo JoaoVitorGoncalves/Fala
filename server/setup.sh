@@ -23,6 +23,8 @@ tailscale status >/dev/null 2>&1 || { echo "    Tailscale não autenticado: rode
 echo "==> Usuário e diretórios do serviço"
 id -u fala >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin fala
 mkdir -p "$FALA_DIR" /etc/fala
+# o serviço (User=fala) precisa escrever o perfil com temp+rename no diretório
+chown fala:fala /etc/fala
 cp fala-profile.py "$FALA_DIR/"
 [ -f "$PROFILE_JSON" ] || cp personalizacao.json "$PROFILE_JSON"
 
