@@ -72,7 +72,7 @@ Configurações → **IA do servidor** → ligar:
 - **Ollama**: `http://<nome-do-servidor>:11434` (nome Tailscale ou o IP `100.x.y.z`)
 - **Personalização**: `http://<nome-do-servidor>:8338`
 - **Token**: o impresso pelo `setup.sh` (`cat /etc/fala/token` no servidor)
-- **Modelo**: `llama3.1:8b-instruct-q4_K_M`
+- **Modelo**: `llama3.2:3b`
 
 Clique **Testar conexão** (deve listar os modelos) e **Sincronizar agora**.
 
