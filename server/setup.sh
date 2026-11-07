@@ -27,8 +27,9 @@ cp fala-profile.py "$FALA_DIR/"
 [ -f "$PROFILE_JSON" ] || cp personalizacao.json "$PROFILE_JSON"
 
 echo "==> Token do serviço"
+# openssl rand: sem pipe sobre stream infinita (tr|head morre de SIGPIPE com pipefail)
 if [ ! -s /etc/fala/token ]; then
-  tr -dc 'A-Za-z0-9' </dev/urandom | head -c 32 > /etc/fala/token
+  openssl rand -hex 16 > /etc/fala/token
   chmod 600 /etc/fala/token
 fi
 # o systemd lê FALA_TOKEN deste arquivo (EnvironmentFile no unit)
