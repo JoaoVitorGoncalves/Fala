@@ -341,7 +341,7 @@ select {
 
 select:hover { background-color: var(--field-fill-hover); }
 
-input[type="text"], input:not([type]), input[type="number"] {
+input[type="text"], input:not([type]), input[type="number"], input[type="password"] {
   height: 28px;
   padding: 0 10px;
   border: 0.5px solid var(--field-border);
@@ -379,13 +379,16 @@ textarea {
 }
 
 /* campo de caminho dentro de .field-pad */
-.field-pad input[type="text"], .field-pad input:not([type]) {
+.field-pad input[type="text"], .field-pad input:not([type]), .field-pad input[type="password"] {
   width: 100%;
   height: auto;
   padding: 6px 9px;
   font-family: var(--font-mono);
   font-size: 12px;
 }
+
+/* vários campos empilhados na mesma área (seção IA do servidor) */
+.field-pad input + input { margin-top: 8px; }
 
 /* slider estilo NSSlider */
 input[type="range"] {

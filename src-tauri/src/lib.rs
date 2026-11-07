@@ -4,6 +4,7 @@
 mod audio;
 mod inject;
 mod live;
+mod llm;
 mod settings;
 mod stt;
 
@@ -82,6 +83,56 @@ pub(crate) fn apply_corrections(mut text: String, corrections: &Option<String>) 
         }
     }
     text
+}
+
+/// Polimento IA da cauda revisada (trechos ao vivo não passam pela IA — já
+/// foram digitados como texto final). Falha é silenciosa: diag + texto sem
+/// polir; a rede nunca pode bloquear o ditado.
+fn polish_tail(app: &AppHandle, generation: u64, text: String) -> String {
+    let Some(ai) = app
+        .state::<AppState>()
+        .settings
+        .lock()
+        .unwrap()
+        .ai
+        .clone()
+        .filter(|ai| ai.enabled)
+    else {
+        return text;
+    };
+    if text.trim().is_empty() {
+        return text;
+    }
+    // HUD só se esta sessão ainda é a dona dele (nova gravação não pode ser sobrescrita)
+    let state = app.state::<AppState>();
+    if state.hud_generation.load(Ordering::Relaxed) == generation
+        && state.status() == Status::Transcribing
+    {
+        hud_state(app, "transcribing", Some("Polindo com IA…"));
+    }
+    let sys = ai
+        .system_prompt
+        .clone()
+        .filter(|p| !p.trim().is_empty())
+        .unwrap_or_else(|| llm::default_system_prompt().into());
+    let started = Instant::now();
+    match llm::polish(&ai, &sys, &text) {
+        Ok(p) if !p.trim().is_empty() => {
+            diag(&format!(
+                "polimento IA em {:.2}s: {p}",
+                started.elapsed().as_secs_f32()
+            ));
+            p
+        }
+        Ok(_) => {
+            diag("polimento IA retornou vazio; mantendo o texto bruto");
+            text
+        }
+        Err(e) => {
+            diag(&format!("polimento IA falhou ({e}); mantendo o texto bruto"));
+            text
+        }
+    }
 }
 
 // ---------------------------------------------------------------- ciclo push-to-talk
@@ -371,7 +422,7 @@ fn stop_recording_and_transcribe(app: &AppHandle) {
         let started = Instant::now();
         // Revisão rápida: só a cauda aberta passa pelo modelo grande. Sem live
         // (ou tudo já confirmado), a cauda é o ditado inteiro — comportamento
-        // clássico. Correções do usuário se aplicam ao resultado.
+        // clássico. Correções do usuário e o polimento IA se aplicam ao resultado.
         let result = if live.tail.is_empty() {
             Ok(live.committed_text.clone())
         } else {
@@ -379,6 +430,7 @@ fn stop_recording_and_transcribe(app: &AppHandle) {
                 .transcriber
                 .transcribe(&live.tail, &model_path, &language, vocab_prompt.as_deref())
                 .map(|text| apply_corrections(text, &corrections))
+                .map(|text| polish_tail(&app, generation, text))
         };
 
         let payload = match result {
@@ -681,6 +733,12 @@ fn get_settings(app: AppHandle) -> Result<SettingsInfo, String> {
 
 #[tauri::command]
 fn set_settings(app: AppHandle, settings: settings::Settings) -> Result<(), String> {
+    let previous = app
+        .state::<AppState>()
+        .settings
+        .lock()
+        .unwrap()
+        .clone();
     settings::save(&app, &settings)?;
     {
         let state = app.state::<AppState>();
@@ -696,6 +754,14 @@ fn set_settings(app: AppHandle, settings: settings::Settings) -> Result<(), Stri
         autolaunch
             .disable()
             .map_err(|e| format!("autostart disable: {e}"))?;
+    }
+    // Personalização mudou e a IA está configurada → envia ao servidor para
+    // valer nos outros dispositivos (fire-and-forget; falha só diag/evento).
+    if let Some(ai) = &settings.ai {
+        if ai.enabled && !ai.profile_url.trim().is_empty() && profile_changed(&previous, &settings)
+        {
+            push_profile(&app);
+        }
     }
     Ok(())
 }
@@ -793,6 +859,121 @@ fn open_accessibility_prefs() {
     inject::open_accessibility_prefs();
 }
 
+// ---------------------------------------------------------------- IA (servidor)
+
+/// Puxa o perfil de personalização do servidor e aplica localmente.
+/// O servidor vence no boot e no botão "Sincronizar"; o app vence ao salvar.
+fn sync_profile_blocking(app: &AppHandle) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let ai = state
+        .settings
+        .lock()
+        .unwrap()
+        .ai
+        .clone()
+        .filter(|ai| !ai.profile_url.trim().is_empty())
+        .ok_or("IA do servidor não configurada")?;
+    let profile = llm::get_profile(&ai)?;
+    let mut s = state.settings.lock().unwrap().clone();
+    if let Some(a) = &mut s.ai {
+        a.system_prompt = profile.system_prompt.or_else(|| a.system_prompt.clone());
+    }
+    s.vocab_prompt = profile.vocab_prompt.or_else(|| s.vocab_prompt.clone());
+    s.corrections = profile.corrections.or_else(|| s.corrections.clone());
+    settings::save(app, &s)?;
+    *state.settings.lock().unwrap() = s;
+    Ok(())
+}
+
+/// Sincroniza o perfil de personalização com o servidor; emite
+/// `profile-synced {ok, error?}` para a UI atualizar vocabulário/correções.
+#[tauri::command]
+fn sync_profile(app: AppHandle) -> Result<(), String> {
+    let h = app.clone();
+    std::thread::spawn(move || {
+        let payload = match sync_profile_blocking(&h) {
+            Ok(()) => {
+                diag("perfil de personalização sincronizado do servidor");
+                serde_json::json!({ "ok": true })
+            }
+            Err(e) => serde_json::json!({ "ok": false, "error": e }),
+        };
+        let _ = h.emit("profile-synced", payload);
+    });
+    Ok(())
+}
+
+/// Testa a conexão com o Ollama configurado; emite `ai-test-result {ok, models?, error?}`.
+#[tauri::command]
+fn test_ai(app: AppHandle) -> Result<(), String> {
+    let ai = app
+        .state::<AppState>()
+        .settings
+        .lock()
+        .unwrap()
+        .ai
+        .clone()
+        .ok_or("IA do servidor não configurada")?;
+    let h = app.clone();
+    std::thread::spawn(move || {
+        let payload = match llm::check(&ai) {
+            Ok(models) => serde_json::json!({ "ok": true, "models": models }),
+            Err(e) => serde_json::json!({ "ok": false, "error": e }),
+        };
+        let _ = h.emit("ai-test-result", payload);
+    });
+    Ok(())
+}
+
+/// Write-through da personalização: o app vence ao salvar. Roda em thread e
+/// reporta pelo mesmo evento `profile-synced` (com `pushed`).
+fn push_profile(app: &AppHandle) {
+    let h = app.clone();
+    std::thread::spawn(move || {
+        let outcome = (|| -> Result<(), String> {
+            let state = h.state::<AppState>();
+            let ai = state
+                .settings
+                .lock()
+                .unwrap()
+                .ai
+                .clone()
+                .ok_or("IA não configurada")?;
+            let s = state.settings.lock().unwrap().clone();
+            llm::put_profile(
+                &ai,
+                &llm::Profile {
+                    system_prompt: ai.system_prompt.clone(),
+                    vocab_prompt: s.vocab_prompt.clone(),
+                    corrections: s.corrections.clone(),
+                },
+            )
+        })();
+        match outcome {
+            Ok(()) => {
+                diag("perfil de personalização enviado ao servidor");
+                let _ = h.emit(
+                    "profile-synced",
+                    serde_json::json!({ "ok": true, "pushed": true }),
+                );
+            }
+            Err(e) => {
+                diag(&format!("falha ao enviar perfil ao servidor: {e}"));
+                let _ = h.emit(
+                    "profile-synced",
+                    serde_json::json!({ "ok": false, "pushed": true, "error": e }),
+                );
+            }
+        }
+    });
+}
+
+/// A personalização mudou entre dois snapshots de settings?
+fn profile_changed(a: &settings::Settings, b: &settings::Settings) -> bool {
+    let sys = |s: &settings::Settings| s.ai.as_ref().and_then(|ai| ai.system_prompt.clone());
+    sys(a) != sys(b) || a.vocab_prompt != b.vocab_prompt || a.corrections != b.corrections
+}
+
 // ---------------------------------------------------------------- bootstrap
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -840,6 +1021,8 @@ pub fn run() {
             accessibility_status,
             open_accessibility_prefs,
             download_live_model,
+            sync_profile,
+            test_ai,
         ])
         .setup(|app| {
             let settings = settings::load(app.handle());
@@ -897,6 +1080,23 @@ pub fn run() {
 
             if settings.autostart {
                 let _ = app.autolaunch().enable();
+            }
+
+            // IA do servidor: puxa o perfil compartilhado (um só para todos os
+            // dispositivos). Servidor vence no boot; falha só diag — app segue offline.
+            if settings
+                .ai
+                .clone()
+                .is_some_and(|ai| ai.enabled && ai.sync_profile && !ai.profile_url.trim().is_empty())
+            {
+                let h = app.handle().clone();
+                std::thread::spawn(move || {
+                    if let Err(e) = sync_profile_blocking(&h) {
+                        diag(&format!("sync do perfil no boot falhou: {e}"));
+                    } else {
+                        diag("perfil de personalização sincronizado no boot");
+                    }
+                });
             }
 
             eprintln!(

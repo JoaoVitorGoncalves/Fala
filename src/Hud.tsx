@@ -142,7 +142,7 @@ export default function Hud() {
         )}
         {state === "transcribing" && (
           <span className="hud-transcribing">
-            <span className="hud-spinner" /> Transcrevendo…
+            <span className="hud-spinner" /> {message ?? "Transcrevendo…"}
           </span>
         )}
         {state === "done" && (
