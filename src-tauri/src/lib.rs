@@ -123,15 +123,19 @@ fn polish_tail(app: &AppHandle, generation: u64, text: String) -> String {
             // tinha) é o modelo RESPONDENDO/completando um fragmento — descarta.
             let inp = text.chars().count();
             let out = p.chars().count();
+            let sim = llm::similarity(text.trim(), p.trim());
             let tem_lista = |t: &str| {
                 t.lines().any(|l| {
                     let l = l.trim_start();
                     l.starts_with("- ") || l.starts_with("* ") || l.starts_with("• ")
                 })
             };
-            if out > inp * 2 + 30 || (tem_lista(&p) && !tem_lista(&text)) {
+            if out > inp * 2 + 30
+                || (tem_lista(&p) && !tem_lista(&text))
+                || sim < 0.6
+            {
                 diag(&format!(
-                    "polimento IA descartado (resposta, não correção): {p}"
+                    "polimento IA descartado (resposta/recusa; similaridade {sim:.2}): {p}"
                 ));
                 text
             } else {
