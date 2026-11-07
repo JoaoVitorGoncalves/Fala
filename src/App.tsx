@@ -64,7 +64,7 @@ const DEFAULT_AI: AiSettings = {
   profile_url: "",
   token: "",
   model: "llama3.2:3b",
-  timeout_secs: 20,
+  timeout_secs: 45,
   sync_profile: true,
   system_prompt: null,
 };

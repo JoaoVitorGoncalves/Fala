@@ -51,7 +51,8 @@ pub struct AiSettings {
     pub token: String,
     /// Modelo no Ollama — ex. llama3.1:8b-instruct-q4_K_M
     pub model: String,
-    /// Timeout do polimento em segundos (estourar = texto entra sem polir)
+    /// Timeout do polimento em segundos (estourar = texto entra sem polir).
+    /// 45s cobre o caso frio do 3b na VM de 2 vCPU (~37s com carga do modelo).
     pub timeout_secs: u32,
     /// Puxar o perfil do servidor quando o app inicia
     pub sync_profile: bool,
@@ -67,7 +68,7 @@ impl Default for AiSettings {
             profile_url: String::new(),
             token: String::new(),
             model: "llama3.2:3b".into(),
-            timeout_secs: 20,
+            timeout_secs: 45,
             sync_profile: true,
             system_prompt: Some(crate::llm::default_system_prompt().to_string()),
         }
