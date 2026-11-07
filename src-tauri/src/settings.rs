@@ -66,7 +66,7 @@ impl Default for AiSettings {
             endpoint: String::new(),
             profile_url: String::new(),
             token: String::new(),
-            model: "llama3.1:8b-instruct-q4_K_M".into(),
+            model: "llama3.2:3b".into(),
             timeout_secs: 20,
             sync_profile: true,
             system_prompt: Some(crate::llm::default_system_prompt().to_string()),

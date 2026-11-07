@@ -63,7 +63,7 @@ const DEFAULT_AI: AiSettings = {
   endpoint: "",
   profile_url: "",
   token: "",
-  model: "llama3.1:8b-instruct-q4_K_M",
+  model: "llama3.2:3b",
   timeout_secs: 20,
   sync_profile: true,
   system_prompt: null,

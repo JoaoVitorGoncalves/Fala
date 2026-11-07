@@ -7,7 +7,7 @@ set -euo pipefail
 
 FALA_DIR=/opt/fala
 PROFILE_JSON=/etc/fala/personalizacao.json
-MODEL="${FALA_MODEL:-llama3.1:8b-instruct-q4_K_M}"
+MODEL="${FALA_MODEL:-llama3.2:3b}"
 
 cd "$(dirname "$0")"
 
