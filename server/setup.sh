@@ -32,8 +32,8 @@ echo "==> Token do serviço"
 # openssl rand: sem pipe sobre stream infinita (tr|head morre de SIGPIPE com pipefail)
 if [ ! -s /etc/fala/token ]; then
   openssl rand -hex 16 > /etc/fala/token
-  chmod 600 /etc/fala/token
 fi
+chmod 600 /etc/fala/token
 # o systemd lê FALA_TOKEN deste arquivo (EnvironmentFile no unit)
 grep -q FALA_TOKEN /etc/fala/token.env 2>/dev/null || echo "FALA_TOKEN=$(cat /etc/fala/token)" > /etc/fala/token.env
 chmod 640 /etc/fala/token.env
