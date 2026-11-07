@@ -50,6 +50,7 @@ mkdir -p /etc/systemd/system/ollama.service.d
 cat > /etc/systemd/system/ollama.service.d/fala.conf <<'EOF'
 [Service]
 Environment="OLLAMA_HOST=0.0.0.0"
+Environment="OLLAMA_KEEP_ALIVE=30m"
 EOF
 systemctl daemon-reload
 systemctl enable --now ollama

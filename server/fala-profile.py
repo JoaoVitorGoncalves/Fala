@@ -70,6 +70,7 @@ class Handler(BaseHTTPRequestHandler):
             fd, tmp = tempfile.mkstemp(dir=directory, suffix=".tmp")
             with os.fdopen(fd, "wb") as f:
                 f.write(raw)
+            os.chmod(tmp, 0o644)  # mkstemp nasce 600 — mantém legível p/ admin
             os.replace(tmp, PROFILE_PATH)  # atômico — leitor nunca vê metade
             self._send(200, b'{"ok": true}')
         except (ValueError, json.JSONDecodeError) as e:
