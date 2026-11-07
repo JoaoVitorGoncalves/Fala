@@ -806,6 +806,16 @@ fn list_devices() -> Vec<String> {
     audio::list_input_devices()
 }
 
+/// Conflito HFP: mic Bluetooth selecionado com fone BT na saída degrada a
+/// música ("efeito copo") enquanto o Fala grava. None = sem conflito.
+#[tauri::command]
+fn audio_conflict(app: AppHandle) -> Result<Option<serde_json::Value>, String> {
+    let device = app.state::<AppState>().settings.lock().unwrap().device.clone();
+    Ok(audio::bt_conflict(device.as_deref()).map(|c| {
+        serde_json::json!({ "input": c.input_name, "suggestion": c.suggestion })
+    }))
+}
+
 /// Baixa o modelo rápido das parciais ao vivo (~181 MB) para ~/.fala/models via
 /// curl. Emite `model-download-progress {received}` durante e `{done, error?}`
 /// no fim. O .part quebra/mantém atomicidade: só o rename publica o modelo.
@@ -1058,6 +1068,7 @@ pub fn run() {
             download_live_model,
             sync_profile,
             test_ai,
+            audio_conflict,
         ])
         .setup(|app| {
             let settings = settings::load(app.handle());

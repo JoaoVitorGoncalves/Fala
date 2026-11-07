@@ -250,3 +250,173 @@ pub fn list_input_devices() -> Vec<String> {
         })
         .unwrap_or_default()
 }
+
+// ---------------------------------------------------------------- conflito HFP
+
+/// Conflito de áudio Bluetooth: o microfone selecionado é BT e a saída padrão
+/// também — abrir o mic comuta o fone para HFP (perfil de ligação) e degrada a
+/// música ("efeito copo"). `suggestion` = entrada não-BT alternativa, se houver.
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct BtConflict {
+    pub input_name: String,
+    pub suggestion: Option<String>,
+}
+
+#[cfg(target_os = "macos")]
+pub fn bt_conflict(selected_input: Option<&str>) -> Option<BtConflict> {
+    macos::bt_conflict_impl(selected_input)
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn bt_conflict(_selected_input: Option<&str>) -> Option<()> {
+    None
+}
+
+/// Consulta direta ao CoreAudio: cpal não expõe o tipo de transporte do
+/// dispositivo, e é ele que revela se a entrada é Bluetooth.
+#[cfg(target_os = "macos")]
+mod macos {
+    use coreaudio_sys::*;
+    use std::ffi::c_void;
+
+    // kAudioObjectSystemObject
+    const SYSTEM_OBJECT: AudioObjectID = 1;
+    // kAudioObjectPropertyElementMaster/Main == 0 (constante definida à mão
+    // para não depender do nome que o SDK binding escolheu)
+    const ELEM: AudioObjectPropertyElement = 0;
+    // 'blue' / 'blle' / 'bltn' (AudioHardwareBase.h — builtin é 'bltn', não 'buil')
+    const TRANSPORT_BT: u32 = 0x626C_7565;
+    const TRANSPORT_BTLE: u32 = 0x626C_6C65;
+    const TRANSPORT_BUILTIN: u32 = 0x626C_746E;
+
+    fn addr(selector: AudioObjectPropertySelector, scope: AudioObjectPropertyScope) -> AudioObjectPropertyAddress {
+        AudioObjectPropertyAddress { mSelector: selector, mScope: scope, mElement: ELEM }
+    }
+
+    pub(crate) fn get<T: Copy>(obj: AudioObjectID, selector: AudioObjectPropertySelector, scope: AudioObjectPropertyScope) -> Option<T> {
+        let a = addr(selector, scope);
+        let mut val = unsafe { std::mem::zeroed::<T>() };
+        let mut size = std::mem::size_of::<T>() as u32;
+        let st = unsafe {
+            AudioObjectGetPropertyData(obj, &a, 0, std::ptr::null(), &mut size, &mut val as *mut T as *mut c_void)
+        };
+        (st == 0 && size as usize >= std::mem::size_of::<T>()).then_some(val)
+    }
+
+    pub(crate) fn device_ids() -> Vec<AudioObjectID> {
+        let a = addr(kAudioHardwarePropertyDevices, kAudioObjectPropertyScopeGlobal);
+        let mut size: u32 = 0;
+        let st = unsafe { AudioObjectGetPropertyDataSize(SYSTEM_OBJECT, &a, 0, std::ptr::null(), &mut size) };
+        if st != 0 || size == 0 {
+            return vec![];
+        }
+        let n = size as usize / std::mem::size_of::<AudioObjectID>();
+        let mut ids = vec![AudioObjectID::default(); n];
+        let st = unsafe {
+            AudioObjectGetPropertyData(SYSTEM_OBJECT, &a, 0, std::ptr::null(), &mut size, ids.as_mut_ptr() as *mut c_void)
+        };
+        if st != 0 { vec![] } else { ids }
+    }
+
+    pub(crate) fn name_of(obj: AudioObjectID) -> String {
+        let a = addr(kAudioObjectPropertyName, kAudioObjectPropertyScopeGlobal);
+        let mut cf: *mut c_void = std::ptr::null_mut();
+        let mut size = std::mem::size_of::<*mut c_void>() as u32;
+        let st = unsafe { AudioObjectGetPropertyData(obj, &a, 0, std::ptr::null(), &mut size, &mut cf as *mut _ as *mut c_void) };
+        if st != 0 || cf.is_null() {
+            return String::new();
+        }
+        unsafe {
+            let cf = cf as CFStringRef;
+            let mut buf = [0u8; 256];
+            let ok = CFStringGetCString(cf, buf.as_mut_ptr() as *mut i8, buf.len() as i64, kCFStringEncodingUTF8);
+            CFRelease(cf as *const c_void);
+            if ok == 0 {
+                return String::new();
+            }
+            let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+            String::from_utf8_lossy(&buf[..end]).into_owned()
+        }
+    }
+
+    pub(crate) fn has_input_stream(obj: AudioObjectID) -> bool {
+        let a = addr(kAudioDevicePropertyStreams, kAudioObjectPropertyScopeInput);
+        let mut size: u32 = 0;
+        let st = unsafe { AudioObjectGetPropertyDataSize(obj, &a, 0, std::ptr::null(), &mut size) };
+        st == 0 && size > 0
+    }
+
+    fn is_bt(transport: u32) -> bool {
+        transport == TRANSPORT_BT || transport == TRANSPORT_BTLE
+    }
+
+    pub(crate) fn bt_conflict_impl(selected_input: Option<&str>) -> Option<super::BtConflict> {
+        let mut info: Vec<(String, u32, bool)> = device_ids()
+            .into_iter()
+            .map(|id| {
+                (
+                    name_of(id),
+                    get::<u32>(id, kAudioDevicePropertyTransportType, kAudioObjectPropertyScopeGlobal)
+                        .unwrap_or(0),
+                    has_input_stream(id),
+                )
+            })
+            .collect();
+
+        // sem fone BT na saída não há "efeito copo" para prevenir
+        let out_id = get::<AudioObjectID>(SYSTEM_OBJECT, kAudioHardwarePropertyDefaultOutputDevice, kAudioObjectPropertyScopeGlobal)?;
+        let out_transport = get::<u32>(out_id, kAudioDevicePropertyTransportType, kAudioObjectPropertyScopeGlobal).unwrap_or(0);
+        if !is_bt(out_transport) {
+            return None;
+        }
+
+        // microfone efetivo: o selecionado nas settings ou o padrão do sistema
+        let in_name = match selected_input {
+            Some(n) => n.to_string(),
+            None => {
+                let in_id = get::<AudioObjectID>(SYSTEM_OBJECT, kAudioHardwarePropertyDefaultInputDevice, kAudioObjectPropertyScopeGlobal)?;
+                name_of(in_id)
+            }
+        };
+        let (_, in_transport, _) = info.iter().find(|(n, _, _)| *n == in_name)?;
+        if !is_bt(*in_transport) {
+            return None;
+        }
+
+        // sugestão: microfone embutido primeiro; senão qualquer entrada não-BT
+        info.sort_by_key(|(_, t, _)| if *t == TRANSPORT_BUILTIN { 0 } else { 1 });
+        let suggestion = info
+            .iter()
+            .find(|(n, t, has_in)| *has_in && n != &in_name && !is_bt(*t))
+            .map(|(n, _, _)| n.clone());
+
+        Some(super::BtConflict { input_name: in_name, suggestion })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// Sonda ao vivo (depende do hardware do momento): `cargo test bt_conflict -- --nocapture`
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn bt_conflict_probe() {
+        use super::macos;
+        eprintln!("bt_conflict(default) = {:?}", super::bt_conflict(None));
+        eprintln!("bt_conflict(builtin) = {:?}", super::bt_conflict(Some("MacBook Air Microphone")));
+        eprintln!("--- dispositivos (nome | transporte hex | tem entrada) ---");
+        for id in macos::device_ids() {
+            let t = macos::get::<u32>(
+                id,
+                coreaudio_sys::kAudioDevicePropertyTransportType,
+                coreaudio_sys::kAudioObjectPropertyScopeGlobal,
+            )
+            .unwrap_or(0);
+            eprintln!(
+                "{:?} | {t:#010x} | entrada={}",
+                macos::name_of(id),
+                macos::has_input_stream(id)
+            );
+        }
+    }
+}

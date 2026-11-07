@@ -692,6 +692,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "coreaudio-sys"
+version = "0.2.18"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b9b4739a805a62757a83e5654fa3faabec0442666b263bb2287d5a8185bfd953"
+dependencies = [
+ "bindgen",
+]
+
+[[package]]
 name = "cpal"
 version = "0.18.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1194,6 +1203,7 @@ name = "fala"
 version = "0.1.0"
 dependencies = [
  "arboard",
+ "coreaudio-sys",
  "cpal",
  "device_query",
  "enigo",

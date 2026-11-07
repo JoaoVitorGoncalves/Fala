@@ -175,11 +175,18 @@ function App() {
   const [dl, setDl] = useState<number | null>(null);
   // status do teste de conexão / sync do perfil da IA do servidor
   const [aiStatus, setAiStatus] = useState<string | null>(null);
+  // conflito HFP: mic BT selecionado com fone BT na saída ("efeito copo")
+  const [btConflict, setBtConflict] = useState<{ input: string; suggestion: string | null } | null>(
+    null,
+  );
 
   const load = useCallback(async () => {
     const i = await invoke<SettingsInfo>("get_settings");
     setInfo(i);
     setDraft(i.settings);
+    invoke<{ input: string; suggestion: string | null } | null>("audio_conflict")
+      .then(setBtConflict)
+      .catch(() => setBtConflict(null));
   }, []);
 
   useEffect(() => {
@@ -711,6 +718,29 @@ function App() {
               </select>
             </span>
           </div>
+          {btConflict && (
+            <div className="row">
+              <span className="row-icon t-orange">
+                <Sym d={IC.alert} />
+              </span>
+              <div className="row-col">
+                <span className="row-label">Conflito de áudio Bluetooth</span>
+                <span className="row-sub">
+                  O microfone de “{btConflict.input}” força o fone para o perfil
+                  de ligação e degrada a música enquanto o Fala grava
+                  (“efeito copo”).
+                  {btConflict.suggestion ? ` Sugestão: ${btConflict.suggestion}.` : ""}
+                </span>
+              </div>
+              {btConflict.suggestion && (
+                <span className="row-end">
+                  <button onClick={() => patch({ device: btConflict.suggestion! })}>
+                    Trocar microfone
+                  </button>
+                </span>
+              )}
+            </div>
+          )}
         </div>
       </section>
 
