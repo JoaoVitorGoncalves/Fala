@@ -1,0 +1,120 @@
+/* Painel "Versão limpa" — janela própria (label panel), vidro via windowEffects
+   nativo (hudWindow radius 20 no conf); o CSS só dá layout e tipografia. */
+
+.panel-body {
+  background: transparent !important;
+  margin: 0;
+  overflow: hidden;
+  height: 100%;
+}
+
+.panel {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+  color: rgba(255, 255, 255, 0.92);
+  padding: 14px 14px 12px;
+  user-select: none;
+}
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 2px 4px 10px;
+  border-bottom: 0.5px solid rgba(255, 255, 255, 0.16);
+}
+
+.panel-title {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+}
+
+.panel-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.panel-actions button {
+  font-family: inherit;
+  font-size: 12px;
+  padding: 4px 10px;
+  border: 0.5px solid rgba(255, 255, 255, 0.22);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.92);
+  cursor: pointer;
+  transition: background 0.15s cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+.panel-actions button:hover:not(:disabled) { background: rgba(255, 255, 255, 0.16); }
+.panel-actions button:active:not(:disabled) { background: rgba(255, 255, 255, 0.24); }
+.panel-actions button:disabled { opacity: 0.4; cursor: default; }
+
+.panel-actions .panel-danger { color: #ff9f0a; }
+
+.panel-scroll {
+  flex: 1;
+  overflow-y: auto;
+  padding: 10px 4px 4px;
+  user-select: text;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.2) transparent;
+}
+
+.panel-scroll::-webkit-scrollbar { width: 5px; }
+.panel-scroll::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 3px;
+}
+
+.panel-empty {
+  margin: 24px 8px;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: rgba(255, 255, 255, 0.45);
+}
+
+.panel-seg {
+  margin: 0 0 10px;
+  font-size: 13.5px;
+  line-height: 1.6;
+  animation: panel-in 0.28s cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+.panel-seg.pending {
+  opacity: 0.5;
+}
+
+.panel-seg.pending::after {
+  content: " ⋯";
+  animation: panel-pulse 1.2s ease-in-out infinite;
+  color: rgba(255, 255, 255, 0.4);
+}
+
+@keyframes panel-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes panel-pulse {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 0.9; }
+}
+
+.panel-toast {
+  position: fixed;
+  bottom: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 12px;
+  padding: 6px 14px;
+  border-radius: 999px;
+  background: rgba(48, 209, 88, 0.22);
+  border: 0.5px solid rgba(48, 209, 88, 0.4);
+  color: rgba(255, 255, 255, 0.95);
+  animation: panel-in 0.2s cubic-bezier(0.32, 0.72, 0, 1);
+}

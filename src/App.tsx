@@ -13,6 +13,7 @@ interface AiSettings {
   timeout_secs: number;
   sync_profile: boolean;
   system_prompt: string | null;
+  polish_before_paste: boolean;
 }
 
 interface Settings {
@@ -67,6 +68,7 @@ const DEFAULT_AI: AiSettings = {
   timeout_secs: 45,
   sync_profile: true,
   system_prompt: null,
+  polish_before_paste: false,
 };
 
 // teclas que sozinhas não viram atalho (o macOS não registra modificador puro)
@@ -601,6 +603,25 @@ function App() {
                     onChange={(e) => patchAi({ timeout_secs: Number(e.target.value) || 20 })}
                   />
                   <span className="row-value">seg</span>
+                </span>
+              </div>
+              <div className="row">
+                <span className="row-col">
+                  <span className="row-label">Esperar IA antes de colar</span>
+                  <span className="row-sub">
+                    Cola o texto polido (mais demorado). Desligado: cola rápido e
+                    a versão limpa chega no painel "Versão limpa" da tray.
+                  </span>
+                </span>
+                <span className="row-end">
+                  <label className="switch">
+                    <input
+                      type="checkbox"
+                      checked={draft.ai.polish_before_paste}
+                      onChange={(e) => patchAi({ polish_before_paste: e.target.checked })}
+                    />
+                    <span />
+                  </label>
                 </span>
               </div>
               <div className="row">

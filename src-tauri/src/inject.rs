@@ -68,6 +68,14 @@ pub fn paste_text(app: &AppHandle, text: &str, mode: &str) -> Result<(), String>
     })
 }
 
+/// Copia texto para o clipboard SEM restaurar o conteúdo anterior — o objetivo
+/// é deixar o texto lá para o usuário colar onde quiser (painel/comandos).
+pub fn copy_to_clipboard(text: &str) -> Result<(), String> {
+    let mut clip = arboard::Clipboard::new().map_err(|e| format!("clipboard: {e}"))?;
+    clip.set_text(text.to_string())
+        .map_err(|e| format!("set_text: {e}"))
+}
+
 fn paste_via_clipboard(app: &AppHandle, text: &str) -> Result<(), String> {
     use arboard::Clipboard;
 

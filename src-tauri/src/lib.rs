@@ -61,6 +61,8 @@ struct AppState {
     /// polimento async: fila de segmentos + worker próprio (não bloqueia a injeção)
     polish_queue: Mutex<Vec<PendingPolish>>,
     polish_next_id: AtomicU64,
+    /// painel "versão limpa": segmentos acumulados (cru até chegar o limpo)
+    panel: Mutex<Vec<PanelSegment>>,
 }
 
 impl AppState {
@@ -150,7 +152,16 @@ pub(crate) struct PendingPolish {
     pub(crate) text: String,
 }
 
-/// Enfileira um texto para polimento async. Sem IA ativa, não enfileira nada.
+/// Segmento do painel "Versão limpa": cru até o worker devolver o texto limpo.
+#[derive(Debug, Clone, serde::Serialize)]
+pub(crate) struct PanelSegment {
+    pub(crate) id: u64,
+    pub(crate) raw: String,
+    pub(crate) clean: Option<String>,
+}
+
+/// Enfileira um texto para polimento async e alimenta o painel. Sem IA ativa,
+/// não enfileira nada.
 pub(crate) fn enqueue_polish(app: &AppHandle, text: String) {
     let state = app.state::<AppState>();
     let ai_on = state
@@ -164,7 +175,43 @@ pub(crate) fn enqueue_polish(app: &AppHandle, text: String) {
         return;
     }
     let id = state.polish_next_id.fetch_add(1, Ordering::Relaxed);
-    state.polish_queue.lock().unwrap().push(PendingPolish { id, text });
+    state
+        .polish_queue
+        .lock()
+        .unwrap()
+        .push(PendingPolish { id, text: text.clone() });
+    state
+        .panel
+        .lock()
+        .unwrap()
+        .push(PanelSegment { id, raw: text, clean: None });
+    emit_panel(app);
+}
+
+/// Estado completo do painel para as janelas (broadcast — o painel re-renderiza).
+fn emit_panel(app: &AppHandle) {
+    let segments = app.state::<AppState>().panel.lock().unwrap().clone();
+    let _ = app.emit("panel-state", serde_json::json!({ "segments": segments }));
+}
+
+/// Aplica o texto limpo ao painel, colapsando o bloco de segmentos [first..=last]
+/// (lote mesclado vira um segmento só).
+fn panel_apply_clean(app: &AppHandle, first_id: u64, last_id: u64, raw_merged: &str, clean: &str) {
+    let state = app.state::<AppState>();
+    let mut segs = state.panel.lock().unwrap();
+    if let Some(pos) = segs.iter().position(|s| s.id == first_id) {
+        let end = segs[pos..].iter().take_while(|s| s.id <= last_id).count();
+        segs.splice(
+            pos..pos + end,
+            [PanelSegment {
+                id: first_id,
+                raw: raw_merged.to_string(),
+                clean: Some(clean.to_string()),
+            }],
+        );
+    }
+    drop(segs);
+    emit_panel(app);
 }
 
 /// Worker do polimento async: drena a fila em background — nunca toca o
@@ -194,6 +241,7 @@ fn spawn_polish_worker(app: AppHandle) {
             continue; // IA desligou no meio: lote descartado (texto bruto já foi entregue)
         };
         // colapso: muitos pendentes viram um texto único polido de uma vez
+        let batch_ids: Vec<u64> = batch.iter().map(|b| b.id).collect();
         let items = if batch.len() > 1 {
             let id = batch[0].id;
             let text = batch
@@ -207,6 +255,10 @@ fn spawn_polish_worker(app: AppHandle) {
         };
         for p in items {
             if let Some(clean) = polish_checked(&ai, &p.text) {
+                // lote mesclado colapsa todos os ids do lote [first..=last] num segmento
+                let first = *batch_ids.first().unwrap_or(&p.id);
+                let last = *batch_ids.last().unwrap_or(&p.id);
+                panel_apply_clean(&app, first, last, &p.text, &clean);
                 let _ = app.emit(
                     "clean-version",
                     serde_json::json!({ "id": p.id, "text": clean }),
@@ -699,6 +751,42 @@ fn show_settings_window(app: &AppHandle) {
     }
 }
 
+// ---------------------------------------------------------------- painel flutuante
+
+const PANEL_W: f64 = 340.0;
+const PANEL_H: f64 = 520.0;
+
+/// Posiciona o painel encostado na borda direita, verticalmente centrado.
+fn position_panel(app: &AppHandle) {
+    let Some(win) = app.get_webview_window("panel") else {
+        return;
+    };
+    if let Ok(Some(monitor)) = app.primary_monitor() {
+        let sf = monitor.scale_factor();
+        let mpos = monitor.position();
+        let msize = monitor.size();
+        let w = (PANEL_W * sf).round() as i32;
+        let h = (PANEL_H * sf).round() as i32;
+        let x = mpos.x + msize.width as i32 - w - (24.0 * sf).round() as i32;
+        let y = mpos.y + (msize.height as i32 - h) / 2;
+        let _ = win.set_position(tauri::PhysicalPosition::new(x, y));
+    }
+}
+
+/// Mostra/esconde o painel "versão limpa" (item da tray).
+fn toggle_panel(app: &AppHandle) {
+    let Some(win) = app.get_webview_window("panel") else {
+        return;
+    };
+    if win.is_visible().unwrap_or(false) {
+        let _ = win.hide();
+    } else {
+        position_panel(app);
+        let _ = win.show();
+        let _ = win.set_focus();
+    }
+}
+
 // ---------------------------------------------------------------- HUD flutuante
 
 const HUD_W: f64 = 320.0;
@@ -910,6 +998,39 @@ fn audio_conflict(app: AppHandle) -> Result<Option<serde_json::Value>, String> {
     Ok(audio::bt_conflict(device.as_deref()).map(|c| {
         serde_json::json!({ "input": c.input_name, "suggestion": c.suggestion })
     }))
+}
+
+// ---------------------------------------------------------------- painel (versão limpa)
+
+#[tauri::command]
+fn panel_state(app: AppHandle) -> Vec<PanelSegment> {
+    app.state::<AppState>().panel.lock().unwrap().clone()
+}
+
+/// Copia a versão limpa (ou o cru, onde o polimento ainda não chegou) e devolve
+/// o número de caracteres copiados.
+#[tauri::command]
+fn panel_copy(app: AppHandle) -> Result<usize, String> {
+    let state = app.state::<AppState>();
+    let segs = state.panel.lock().unwrap().clone();
+    let text = segs
+        .iter()
+        .map(|s| s.clean.clone().unwrap_or_else(|| s.raw.clone()))
+        .collect::<Vec<_>>()
+        .join(" ");
+    if text.trim().is_empty() {
+        return Err("painel vazio — nada para copiar".into());
+    }
+    let n = text.chars().count();
+    inject::copy_to_clipboard(&text)?;
+    Ok(n)
+}
+
+#[tauri::command]
+fn panel_clear(app: AppHandle) -> Result<(), String> {
+    app.state::<AppState>().panel.lock().unwrap().clear();
+    emit_panel(&app);
+    Ok(())
 }
 
 /// Baixa o modelo rápido das parciais ao vivo (~181 MB) para ~/.fala/models via
@@ -1165,6 +1286,9 @@ pub fn run() {
             sync_profile,
             test_ai,
             audio_conflict,
+            panel_state,
+            panel_copy,
+            panel_clear,
         ])
         .setup(|app| {
             let settings = settings::load(app.handle());
@@ -1181,14 +1305,16 @@ pub fn run() {
                 live_download: AtomicBool::new(false),
                 polish_queue: Mutex::new(Vec::new()),
                 polish_next_id: AtomicU64::new(0),
+                panel: Mutex::new(Vec::new()),
             });
 
             // versão limpa: worker de polimento async (drena a fila em background)
             spawn_polish_worker(app.handle().clone());
 
             let show = MenuItem::with_id(app, "settings", "Configurações…", true, None::<&str>)?;
+            let panel = MenuItem::with_id(app, "panel", "Versão limpa", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Sair", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show, &quit])?;
+            let menu = Menu::with_items(app, &[&show, &panel, &quit])?;
 
             TrayIconBuilder::with_id(TRAY_ID)
                 .icon(app.default_window_icon().expect("ícone padrão").clone())
@@ -1199,6 +1325,7 @@ pub fn run() {
                     eprintln!("[fala] menu da bandeja: {}", ev.id.as_ref());
                     match ev.id.as_ref() {
                         "settings" => show_settings_window(app),
+                        "panel" => toggle_panel(app),
                         "quit" => request_shutdown(app),
                         _ => {}
                     }

@@ -46,6 +46,25 @@
           "effects": ["liquidGlassClear"],
           "radius": 42
         }
+      },
+      {
+        "label": "panel",
+        "title": "Fala — Versão limpa",
+        "width": 340,
+        "height": 520,
+        "minWidth": 300,
+        "minHeight": 320,
+        "visible": false,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "shadow": false,
+        "theme": "Dark",
+        "windowEffects": {
+          "effects": ["hudWindow"],
+          "radius": 20
+        }
       }
     ],
     "security": {
