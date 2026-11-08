@@ -30,6 +30,7 @@ interface Settings {
   corrections: string | null;
   live_transcribe: boolean;
   live_model_path: string | null;
+  meeting_mode: boolean;
   ai: AiSettings | null;
 }
 
@@ -700,6 +701,34 @@ function App() {
           Os trechos ao vivo usam um modelo pequeno e rápido; a revisão do
           trecho final usa o modelo Whisper configurado acima.
         </p>
+      </section>
+
+      <section className="group">
+        <h2>Modo reunião</h2>
+        <div className="card">
+          <div className="row">
+            <span className="row-icon t-indigo">
+              <Sym d={IC.wave} />
+            </span>
+            <div className="row-col">
+              <span className="row-label">Capturar sem colar</span>
+              <span className="row-sub">
+                Nada é colado em outros apps — a transcrição acumula no painel
+                “Versão limpa” da tray, com a IA limpando cada trecho. Copie no final.
+              </span>
+            </div>
+            <span className="row-end">
+              <label className="switch">
+                <input
+                  type="checkbox"
+                  checked={draft.meeting_mode}
+                  onChange={(e) => patch({ meeting_mode: e.target.checked })}
+                />
+                <span />
+              </label>
+            </span>
+          </div>
+        </div>
       </section>
 
       <section className="group">

@@ -347,9 +347,16 @@ fn begin_recording(app: &AppHandle, settings: &settings::Settings) -> Result<(),
         live,
     });
     state.set_status(Status::Recording);
-    update_tray(app, Status::Recording, None);
+    if settings.meeting_mode {
+        update_tray(app, Status::Recording, Some("Fala — reunião: capturando sem colar"));
+    } else {
+        update_tray(app, Status::Recording, None);
+    }
     hud_state(app, "recording", None);
     show_hud(app);
+    if settings.meeting_mode {
+        hud_chip(app, "Reunião: capturando sem colar");
+    }
 
     // thread de supervisão: emite níveis p/ o HUD, auto-stop por silêncio,
     // timeout sem fala e tecla Esc para finalizar
@@ -551,6 +558,7 @@ fn stop_recording_and_transcribe(app: &AppHandle) {
     let ai = settings.ai.clone();
     // comportamento clássico opt-in: esperar o polimento IA antes de colar
     let polish_before_paste = ai.as_ref().is_some_and(|a| a.enabled && a.polish_before_paste);
+    let meeting_mode = settings.meeting_mode;
 
     let app = app.clone(); // handle próprio para a thread de transcrição
     std::thread::spawn(move || {
@@ -624,6 +632,15 @@ fn stop_recording_and_transcribe(app: &AppHandle) {
                 } else if live.tail.is_empty() {
                     // tudo já foi digitado pelos commits ao vivo
                     serde_json::json!({ "ok": true, "text": text })
+                } else if meeting_mode {
+                    // modo reunião: nada é colado — a cauda vai só para o painel
+                    enqueue_polish(&app, text.clone());
+                    let full = if live.committed_text.is_empty() {
+                        text
+                    } else {
+                        format!("{} {text}", live.committed_text.trim())
+                    };
+                    serde_json::json!({ "ok": true, "text": full, "meeting": true })
                 } else {
                     // Comportamento clássico opt-in: esperar a IA e colar polido.
                     // Padrão: cola rápido (correções locais) e o polimento segue

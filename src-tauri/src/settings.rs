@@ -31,6 +31,8 @@ pub struct Settings {
     pub live_transcribe: bool,
     /// Modelo rápido (ggml) para as parciais ao vivo; None = usa o default detectável
     pub live_model_path: Option<String>,
+    /// Modo reunião: capturar SEM colar — tudo acumula no painel "versão limpa"
+    pub meeting_mode: bool,
     /// IA remota + perfil de personalização compartilhado (None = desativada)
     pub ai: Option<AiSettings>,
 }
@@ -95,6 +97,7 @@ impl Default for Settings {
             corrections: None,
             live_transcribe: true,
             live_model_path: None,
+            meeting_mode: false,
             ai: None,
         }
     }

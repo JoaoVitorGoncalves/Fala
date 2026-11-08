@@ -207,6 +207,18 @@ fn run(
             }
             continue;
         }
+        // modo reunião: nada é colado — o trecho só alimenta o painel e o
+        // contexto do prompt (a revisão final também não injeta)
+        let meeting = app.state::<AppState>().settings.lock().unwrap().meeting_mode;
+        if meeting {
+            committed_text.push_str(&format!(
+                "{}{text}",
+                if committed_text.is_empty() { "" } else { " " }
+            ));
+            committed_until = boundary;
+            crate::enqueue_polish(&app, text.clone());
+            continue;
+        }
         let sep = if committed_text.is_empty() { "" } else { " " };
         let to_type = format!("{sep}{text}");
         if let Err(e) = inject::type_text_on_main(&app, &to_type) {
