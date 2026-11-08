@@ -214,3 +214,19 @@ body,
 @media (prefers-reduced-motion: reduce) {
   * { animation: none !important; transition: none !important; }
 }
+
+/* chip de feedback (comandos de voz) — flutua acima da cápsula sem mudar estado */
+.hud-chip {
+  position: absolute;
+  top: -34px;
+  left: 50%;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  font-size: 12px;
+  padding: 5px 12px;
+  border-radius: 999px;
+  background: rgba(18, 18, 22, 0.88);
+  border: 0.5px solid rgba(255, 255, 255, 0.18);
+  color: rgba(255, 255, 255, 0.95);
+  animation: hud-in 0.2s var(--ease-out);
+}

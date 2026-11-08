@@ -63,6 +63,8 @@ struct AppState {
     polish_next_id: AtomicU64,
     /// painel "versão limpa": segmentos acumulados (cru até chegar o limpo)
     panel: Mutex<Vec<PanelSegment>>,
+    /// chars colados por trecho, na ordem — base dos comandos "apagar"
+    injected: Mutex<Vec<usize>>,
 }
 
 impl AppState {
@@ -607,7 +609,19 @@ fn stop_recording_and_transcribe(app: &AppHandle) {
                 app.state::<AppState>()
                     .no_speech_retries
                     .store(0, std::sync::atomic::Ordering::Relaxed);
-                if live.tail.is_empty() {
+                if let Some(cmd) = detect_command(&text) {
+                    // comando dito na cauda (ou sem live): vira ação, não texto
+                    match execute_command(&app, cmd) {
+                        Ok(feedback) => {
+                            hud_chip(&app, feedback);
+                            serde_json::json!({ "ok": true, "text": format!("[{feedback}]") })
+                        }
+                        Err(e) => {
+                            hud_chip(&app, &format!("Comando falhou: {e}"));
+                            serde_json::json!({ "ok": true, "text": text })
+                        }
+                    }
+                } else if live.tail.is_empty() {
                     // tudo já foi digitado pelos commits ao vivo
                     serde_json::json!({ "ok": true, "text": text })
                 } else {
@@ -629,12 +643,19 @@ fn stop_recording_and_transcribe(app: &AppHandle) {
                     };
                     // insere a cauda revisada — nada existente é apagado
                     let sep = if live.committed_text.is_empty() { "" } else { " " };
-                    match inject::paste_text(&app, &format!("{sep}{text}"), &paste_mode) {
+                    let injected = format!("{sep}{text}");
+                    match inject::paste_text(&app, &injected, &paste_mode) {
                         Ok(()) => {
                             if !polish_before_paste {
                                 // versão limpa async: a cauda cru vai para o worker
                                 enqueue_polish(&app, text.clone());
                             }
+                            // rastreia chars colados (base dos comandos "apagar")
+                            app.state::<AppState>()
+                                .injected
+                                .lock()
+                                .unwrap()
+                                .push(injected.chars().count());
                             serde_json::json!({ "ok": true, "text": text })
                         }
                         Err(e) => {
@@ -1006,7 +1027,6 @@ fn audio_conflict(app: AppHandle) -> Result<Option<serde_json::Value>, String> {
 fn panel_state(app: AppHandle) -> Vec<PanelSegment> {
     app.state::<AppState>().panel.lock().unwrap().clone()
 }
-
 /// Copia a versão limpa (ou o cru, onde o polimento ainda não chegou) e devolve
 /// o número de caracteres copiados.
 #[tauri::command]
@@ -1031,6 +1051,93 @@ fn panel_clear(app: AppHandle) -> Result<(), String> {
     app.state::<AppState>().panel.lock().unwrap().clear();
     emit_panel(&app);
     Ok(())
+}
+
+// ---------------------------------------------------------------- comandos de voz
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum VoiceCommand {
+    NewParagraph,
+    DeleteAll,
+    DeleteLast,
+    CopyClean,
+}
+
+/// Normaliza para comparação: minúsculas, sem acentos, sem pontuação final.
+fn normalize_command(text: &str) -> String {
+    text.trim()
+        .trim_end_matches(['.', ',', '!', '?', ';', ':'])
+        .to_lowercase()
+        .chars()
+        .map(|c| match c {
+            'á' | 'à' | 'â' | 'ã' => 'a',
+            'é' | 'ê' => 'e',
+            'í' => 'i',
+            'ó' | 'ô' | 'õ' => 'o',
+            'ú' => 'u',
+            'ç' => 'c',
+            other => other,
+        })
+        .collect()
+}
+
+/// Frase exata = comando (v1). O texto do comando nunca é colado nem vai ao
+/// painel — a frase é consumida como ação.
+pub(crate) fn detect_command(text: &str) -> Option<VoiceCommand> {
+    match normalize_command(text).as_str() {
+        "novo paragrafo" => Some(VoiceCommand::NewParagraph),
+        "apagar tudo" => Some(VoiceCommand::DeleteAll),
+        "apagar ultimo" => Some(VoiceCommand::DeleteLast),
+        "copiar versao limpa" => Some(VoiceCommand::CopyClean),
+        _ => None,
+    }
+}
+
+/// Feedback leve no HUD sem mudar de estado (gravação continua).
+pub(crate) fn hud_chip(app: &AppHandle, message: &str) {
+    let _ = app.emit("hud-chip", serde_json::json!({ "message": message }));
+}
+
+/// Executa um comando de voz. O texto colado pelo Fala é rastreado em
+/// `AppState.injected` (chars por trecho) — é isso que os backspaces apagam.
+pub(crate) fn execute_command(
+    app: &AppHandle,
+    cmd: VoiceCommand,
+) -> Result<&'static str, String> {
+    let state = app.state::<AppState>();
+    match cmd {
+        VoiceCommand::NewParagraph => {
+            inject::enter_on_main(app, 2)?;
+            Ok("Parágrafo novo ✓")
+        }
+        VoiceCommand::DeleteAll => {
+            let total: usize = state.injected.lock().unwrap().iter().sum();
+            inject::backspace_on_main(app, total)?;
+            state.injected.lock().unwrap().clear();
+            Ok("Texto apagado ✓")
+        }
+        VoiceCommand::DeleteLast => {
+            let last = state.injected.lock().unwrap().pop().unwrap_or(0);
+            if last == 0 {
+                return Err("nada para apagar".into());
+            }
+            inject::backspace_on_main(app, last)?;
+            Ok("Trecho apagado ✓")
+        }
+        VoiceCommand::CopyClean => {
+            let segs = state.panel.lock().unwrap().clone();
+            let text = segs
+                .iter()
+                .map(|s| s.clean.clone().unwrap_or_else(|| s.raw.clone()))
+                .collect::<Vec<_>>()
+                .join(" ");
+            if text.trim().is_empty() {
+                return Err("versão limpa está vazia".into());
+            }
+            inject::copy_to_clipboard(&text)?;
+            Ok("Versão limpa copiada ✓")
+        }
+    }
 }
 
 /// Baixa o modelo rápido das parciais ao vivo (~181 MB) para ~/.fala/models via
@@ -1306,6 +1413,7 @@ pub fn run() {
                 polish_queue: Mutex::new(Vec::new()),
                 polish_next_id: AtomicU64::new(0),
                 panel: Mutex::new(Vec::new()),
+                injected: Mutex::new(Vec::new()),
             });
 
             // versão limpa: worker de polimento async (drena a fila em background)

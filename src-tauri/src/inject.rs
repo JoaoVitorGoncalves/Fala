@@ -130,3 +130,33 @@ pub(crate) fn type_text_on_main(app: &AppHandle, text: &str) -> Result<(), Strin
     let text = text.to_string();
     on_main(app, move || type_text(text)).and_then(|r| r)
 }
+
+/// Pressiona uma tecla `n` vezes no app focado (comandos de voz: backspace,
+/// enter). Teclas reais — `enigo.text` não apaga nem garante Enter.
+fn press_key_n(key: enigo::Key, n: usize) -> Result<(), String> {
+    use enigo::{Direction, Enigo, Keyboard, Settings};
+    let mut enigo = Enigo::new(&Settings::default()).map_err(|e| e.to_string())?;
+    for _ in 0..n {
+        enigo.key(key, Direction::Click).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// n backspaces no app focado (apagar tudo/último). Cap de 500: muito além
+/// disso indicaria estado inconsistente do contador de caracteres.
+pub(crate) fn backspace_on_main(app: &AppHandle, n: usize) -> Result<(), String> {
+    let n = n.min(500);
+    if n == 0 {
+        return Ok(());
+    }
+    on_main(app, move || press_key_n(enigo::Key::Backspace, n)).and_then(|r| r)
+}
+
+/// n Enters no app focado ("novo parágrafo" = 2). No enigo 0.6 a variante é `Return`.
+pub(crate) fn enter_on_main(app: &AppHandle, n: usize) -> Result<(), String> {
+    let n = n.min(10);
+    if n == 0 {
+        return Ok(());
+    }
+    on_main(app, move || press_key_n(enigo::Key::Return, n)).and_then(|r| r)
+}

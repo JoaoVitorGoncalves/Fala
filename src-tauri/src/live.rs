@@ -192,6 +192,21 @@ fn run(
             committed_until = boundary;
             continue;
         }
+        // comando de voz: frase exata vira ação — nunca vira texto colado
+        if let Some(cmd) = crate::detect_command(&text) {
+            committed_until = boundary;
+            match crate::execute_command(&app, cmd) {
+                Ok(feedback) => {
+                    diag(&format!("live: comando executado: {feedback}"));
+                    crate::hud_chip(&app, feedback);
+                }
+                Err(e) => {
+                    diag(&format!("live: comando falhou: {e}"));
+                    crate::hud_chip(&app, &format!("Comando falhou: {e}"));
+                }
+            }
+            continue;
+        }
         let sep = if committed_text.is_empty() { "" } else { " " };
         let to_type = format!("{sep}{text}");
         if let Err(e) = inject::type_text_on_main(&app, &to_type) {
@@ -203,6 +218,11 @@ fn run(
             break;
         }
         committed_text.push_str(&to_type);
+        app.state::<AppState>()
+            .injected
+            .lock()
+            .unwrap()
+            .push(to_type.chars().count());
         committed_until = boundary;
         // versão limpa: o trecho cru vai para o worker de polimento async —
         // nunca bloqueia a digitação do próximo trecho
