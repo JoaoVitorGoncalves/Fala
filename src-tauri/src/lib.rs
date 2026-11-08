@@ -58,6 +58,9 @@ struct AppState {
     shutdown_waiter_started: AtomicBool,
     /// download do modelo rápido em andamento (evita downloads concorrentes)
     live_download: AtomicBool,
+    /// polimento async: fila de segmentos + worker próprio (não bloqueia a injeção)
+    polish_queue: Mutex<Vec<PendingPolish>>,
+    polish_next_id: AtomicU64,
 }
 
 impl AppState {
@@ -85,30 +88,12 @@ pub(crate) fn apply_corrections(mut text: String, corrections: &Option<String>) 
     text
 }
 
-/// Polimento IA da cauda revisada (trechos ao vivo não passam pela IA — já
-/// foram digitados como texto final). Falha é silenciosa: diag + texto sem
-/// polir; a rede nunca pode bloquear o ditado.
-fn polish_tail(app: &AppHandle, generation: u64, text: String) -> String {
-    let Some(ai) = app
-        .state::<AppState>()
-        .settings
-        .lock()
-        .unwrap()
-        .ai
-        .clone()
-        .filter(|ai| ai.enabled)
-    else {
-        return text;
-    };
+/// Polimento IA com as guardas determinísticas. Devolve o texto limpo ou None
+/// (resposta/recusa do modelo, saída vazia ou falha de rede) — o chamador
+/// mantém o texto bruto nesses casos. Nunca bloqueia nada além do chamador.
+fn polish_checked(ai: &settings::AiSettings, text: &str) -> Option<String> {
     if text.trim().is_empty() {
-        return text;
-    }
-    // HUD só se esta sessão ainda é a dona dele (nova gravação não pode ser sobrescrita)
-    let state = app.state::<AppState>();
-    if state.hud_generation.load(Ordering::Relaxed) == generation
-        && state.status() == Status::Transcribing
-    {
-        hud_state(app, "transcribing", Some("Polindo com IA…"));
+        return None;
     }
     let sys = ai
         .system_prompt
@@ -116,11 +101,12 @@ fn polish_tail(app: &AppHandle, generation: u64, text: String) -> String {
         .filter(|p| !p.trim().is_empty())
         .unwrap_or_else(|| llm::default_system_prompt().into());
     let started = Instant::now();
-    match llm::polish(&ai, &sys, &text) {
+    match llm::polish(ai, &sys, text) {
         Ok(p) if !p.trim().is_empty() => {
             // Salvaguarda determinística: correção legítima tem tamanho ~igual
-            // ao ditado. Saída muito maior (ou com markdown que o ditado não
-            // tinha) é o modelo RESPONDENDO/completando um fragmento — descarta.
+            // ao ditado e mesma estrutura. Saída muito maior (ou com markdown
+            // que o ditado não tinha) é o modelo RESPONDENDO/completando um
+            // fragmento — descarta.
             let inp = text.chars().count();
             let out = p.chars().count();
             let sim = llm::similarity(text.trim(), p.trim());
@@ -131,30 +117,103 @@ fn polish_tail(app: &AppHandle, generation: u64, text: String) -> String {
                 })
             };
             if out > inp * 2 + 30
-                || (tem_lista(&p) && !tem_lista(&text))
+                || (tem_lista(&p) && !tem_lista(text))
                 || sim < 0.6
             {
                 diag(&format!(
                     "polimento IA descartado (resposta/recusa; similaridade {sim:.2}): {p}"
                 ));
-                text
+                None
             } else {
                 diag(&format!(
                     "polimento IA em {:.2}s: {p}",
                     started.elapsed().as_secs_f32()
                 ));
-                p
+                Some(p)
             }
         }
         Ok(_) => {
             diag("polimento IA retornou vazio; mantendo o texto bruto");
-            text
+            None
         }
         Err(e) => {
             diag(&format!("polimento IA falhou ({e}); mantendo o texto bruto"));
-            text
+            None
         }
     }
+}
+
+/// Segmento pendente de polimento (ao vivo: um trecho commitado; final: a cauda).
+#[derive(Debug, Clone)]
+pub(crate) struct PendingPolish {
+    pub(crate) id: u64,
+    pub(crate) text: String,
+}
+
+/// Enfileira um texto para polimento async. Sem IA ativa, não enfileira nada.
+pub(crate) fn enqueue_polish(app: &AppHandle, text: String) {
+    let state = app.state::<AppState>();
+    let ai_on = state
+        .settings
+        .lock()
+        .unwrap()
+        .ai
+        .as_ref()
+        .is_some_and(|a| a.enabled);
+    if !ai_on || text.trim().is_empty() {
+        return;
+    }
+    let id = state.polish_next_id.fetch_add(1, Ordering::Relaxed);
+    state.polish_queue.lock().unwrap().push(PendingPolish { id, text });
+}
+
+/// Worker do polimento async: drena a fila em background — nunca toca o
+/// caminho da injeção. Backlog ≥ 3 colapsa num request só (o servidor é
+/// single-user; o resultado vale para o lote todo). Emite `clean-version`.
+fn spawn_polish_worker(app: AppHandle) {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_millis(300));
+        let batch: Vec<PendingPolish> = {
+            let state = app.state::<AppState>();
+            let mut q = state.polish_queue.lock().unwrap();
+            if q.is_empty() {
+                continue;
+            }
+            let take = q.len().min(if q.len() >= 3 { q.len() } else { 1 });
+            q.drain(..take).collect()
+        };
+        let Some(ai) = app
+            .state::<AppState>()
+            .settings
+            .lock()
+            .unwrap()
+            .ai
+            .clone()
+            .filter(|a| a.enabled)
+        else {
+            continue; // IA desligou no meio: lote descartado (texto bruto já foi entregue)
+        };
+        // colapso: muitos pendentes viram um texto único polido de uma vez
+        let items = if batch.len() > 1 {
+            let id = batch[0].id;
+            let text = batch
+                .iter()
+                .map(|p| p.text.trim().to_string())
+                .collect::<Vec<_>>()
+                .join(" ");
+            vec![PendingPolish { id, text }]
+        } else {
+            batch
+        };
+        for p in items {
+            if let Some(clean) = polish_checked(&ai, &p.text) {
+                let _ = app.emit(
+                    "clean-version",
+                    serde_json::json!({ "id": p.id, "text": clean }),
+                );
+            }
+        }
+    });
 }
 
 // ---------------------------------------------------------------- ciclo push-to-talk
@@ -415,12 +474,15 @@ fn stop_recording_and_transcribe(app: &AppHandle) {
     diag(&format!("níveis (2s cada):{}", mapa.join(" |")));
     // "silêncio digital" nos últimos 4s: ~100% = o stream entregou zeros
     // (trava do dispositivo/BT) mesmo com o usuário falando; ruído ambiente
-    // real fica bem abaixo disso.
+    // real fica bem abaixo disso. Fala no começo + zeros no fim = mic travou.
     let cauda = &samples[samples.len().saturating_sub(64_000)..];
     let zeros = cauda.iter().filter(|s| s.abs() < 1e-4).count();
+    let zeros_pct = zeros as f32 / cauda.len().max(1) as f32 * 100.0;
+    let had_speech = níveis.iter().any(|rms| *rms > 0.015);
+    let mic_stalled = had_speech && zeros_pct > 95.0;
     diag(&format!(
-        "silêncio digital nos últimos 4s: {:.0}%",
-        zeros as f32 / cauda.len().max(1) as f32 * 100.0
+        "silêncio digital nos últimos 4s: {zeros_pct:.0}%{}",
+        if mic_stalled { " → MIC TRAVOU" } else { "" }
     ));
 
     let settings = state.settings.lock().unwrap().clone();
@@ -432,6 +494,9 @@ fn stop_recording_and_transcribe(app: &AppHandle) {
         .clone()
         .filter(|p| !p.trim().is_empty());
     let corrections = settings.corrections.clone();
+    let ai = settings.ai.clone();
+    // comportamento clássico opt-in: esperar o polimento IA antes de colar
+    let polish_before_paste = ai.as_ref().is_some_and(|a| a.enabled && a.polish_before_paste);
 
     let app = app.clone(); // handle próprio para a thread de transcrição
     std::thread::spawn(move || {
@@ -465,7 +530,6 @@ fn stop_recording_and_transcribe(app: &AppHandle) {
                 .transcriber
                 .transcribe(&live.tail, &model_path, &language, vocab_prompt.as_deref())
                 .map(|text| apply_corrections(text, &corrections))
-                .map(|text| polish_tail(&app, generation, text))
         };
 
         let payload = match result {
@@ -495,10 +559,32 @@ fn stop_recording_and_transcribe(app: &AppHandle) {
                     // tudo já foi digitado pelos commits ao vivo
                     serde_json::json!({ "ok": true, "text": text })
                 } else {
+                    // Comportamento clássico opt-in: esperar a IA e colar polido.
+                    // Padrão: cola rápido (correções locais) e o polimento segue
+                    // async para o painel/evento clean-version.
+                    let text = if polish_before_paste {
+                        let st = app.state::<AppState>();
+                        if st.hud_generation.load(Ordering::Relaxed) == generation
+                            && st.status() == Status::Transcribing
+                        {
+                            hud_state(&app, "transcribing", Some("Polindo com IA…"));
+                        }
+                        ai.as_ref()
+                            .and_then(|a| polish_checked(a, &text))
+                            .unwrap_or(text)
+                    } else {
+                        text
+                    };
                     // insere a cauda revisada — nada existente é apagado
                     let sep = if live.committed_text.is_empty() { "" } else { " " };
                     match inject::paste_text(&app, &format!("{sep}{text}"), &paste_mode) {
-                        Ok(()) => serde_json::json!({ "ok": true, "text": text }),
+                        Ok(()) => {
+                            if !polish_before_paste {
+                                // versão limpa async: a cauda cru vai para o worker
+                                enqueue_polish(&app, text.clone());
+                            }
+                            serde_json::json!({ "ok": true, "text": text })
+                        }
                         Err(e) => {
                             diag(&format!("falha ao inserir a cauda: {e}"));
                             serde_json::json!({ "ok": false, "error": format!("Falha ao inserir: {e}"), "text": text })
@@ -530,8 +616,18 @@ fn stop_recording_and_transcribe(app: &AppHandle) {
         update_tray(&app, Status::Idle, None);
         let ok = payload.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
         if ok {
-            hud_state(&app, "done", None);
-            schedule_hud_hide(&app, 1400, generation);
+            if mic_stalled {
+                // o stream entregou zeros no fim: avisar em vez de sucesso silencioso
+                hud_state(
+                    &app,
+                    "error",
+                    Some("Microfone travou durante a gravação (Bluetooth?) — texto até aqui foi entregue"),
+                );
+                schedule_hud_hide(&app, 3400, generation);
+            } else {
+                hud_state(&app, "done", None);
+                schedule_hud_hide(&app, 1400, generation);
+            }
         } else {
             let msg = payload
                 .get("error")
@@ -1083,7 +1179,12 @@ pub fn run() {
                 active_transcriptions: AtomicU32::new(0),
                 shutdown_waiter_started: AtomicBool::new(false),
                 live_download: AtomicBool::new(false),
+                polish_queue: Mutex::new(Vec::new()),
+                polish_next_id: AtomicU64::new(0),
             });
+
+            // versão limpa: worker de polimento async (drena a fila em background)
+            spawn_polish_worker(app.handle().clone());
 
             let show = MenuItem::with_id(app, "settings", "Configurações…", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Sair", true, None::<&str>)?;

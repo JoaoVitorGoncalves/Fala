@@ -179,6 +179,8 @@ function App() {
   const [btConflict, setBtConflict] = useState<{ input: string; suggestion: string | null } | null>(
     null,
   );
+  // versão limpa (polida pela IA) chegando async após a injeção
+  const [lastClean, setLastClean] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     const i = await invoke<SettingsInfo>("get_settings");
@@ -213,8 +215,12 @@ function App() {
       }
       load().catch(() => {});
     });
+    const unClean = listen<{ id: number; text: string }>("clean-version", (ev) => {
+      setLastClean((prev) => prev ? `${prev} ${ev.payload.text}` : ev.payload.text);
+    });
     return () => {
       un.then((f) => f());
+      unClean.then((f) => f());
     };
   }, [load]);
 
@@ -845,6 +851,19 @@ function App() {
           <h2>Última transcrição</h2>
           <div className="card">
             <blockquote>“{lastTranscription}”</blockquote>
+            {lastClean && (
+              <>
+                <div className="row">
+                  <span className="row-icon t-pink">
+                    <Sym d={IC.sparkles} />
+                  </span>
+                  <span className="row-label">Versão limpa (IA)</span>
+                </div>
+                <div className="field-pad">
+                  <textarea rows={3} value={lastClean} readOnly spellCheck={false} />
+                </div>
+              </>
+            )}
           </div>
         </section>
       )}

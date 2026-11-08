@@ -204,6 +204,9 @@ fn run(
         }
         committed_text.push_str(&to_type);
         committed_until = boundary;
+        // versão limpa: o trecho cru vai para o worker de polimento async —
+        // nunca bloqueia a digitação do próximo trecho
+        crate::enqueue_polish(&app, text.clone());
     }
 
     LiveResult {
