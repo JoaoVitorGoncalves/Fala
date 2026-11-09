@@ -647,8 +647,8 @@ fn stop_recording_and_transcribe(app: &AppHandle) {
         // (ou tudo já confirmado), a cauda é o ditado inteiro — comportamento
         // clássico. Correções do usuário e o polimento IA se aplicam ao resultado.
         let result = if tail.is_empty() {
-            let (pending, had_buffer) = take_command_buffer(&app, "");
-            if had_buffer && !pending.is_empty() {
+            let pending = take_command_buffer(&app);
+            if !pending.is_empty() {
                 diag(&format!("comando pendente liberado como texto: {pending}"));
                 Ok(if live.committed_text.is_empty() {
                     pending
@@ -663,7 +663,7 @@ fn stop_recording_and_transcribe(app: &AppHandle) {
                 .transcriber
                 .transcribe(&tail, &model_path, &language, vocab_prompt.as_deref())
                 .map(|text| apply_corrections(text, &corrections))
-                .map(|text| take_command_buffer(&app, &text).0)
+                .map(|text| merge_command_buffer(&app, text))
         };
         let payload = match result {
             Ok(text) if text.is_empty() => {
@@ -1252,19 +1252,23 @@ pub(crate) fn command_decision(app: &AppHandle, text: &str) -> CommandDecision {
 
 /// Junta prefixo retido com a cauda final. O prefixo só foi retido porque a
 /// gravação ainda podia completar um comando no stop.
-pub(crate) fn take_command_buffer(app: &AppHandle, text: &str) -> (String, bool) {
+pub(crate) fn take_command_buffer(app: &AppHandle) -> String {
     let state = app.state::<AppState>();
     let mut buffer = state.command_buffer.lock().unwrap();
-    let had_buffer = !buffer.trim().is_empty();
-    let output = if !had_buffer {
-        text.trim().to_string()
-    } else if text.trim().is_empty() {
-        buffer.trim().to_string()
-    } else {
-        format!("{} {}", buffer.trim(), text.trim())
-    };
+    let output = buffer.trim().to_string();
     buffer.clear();
-    (output, had_buffer)
+    output
+}
+
+fn merge_command_buffer(app: &AppHandle, text: String) -> String {
+    let pending = take_command_buffer(app);
+    if pending.is_empty() {
+        text
+    } else if text.trim().is_empty() {
+        pending
+    } else {
+        format!("{pending} {}", text.trim())
+    }
 }
 
 /// Feedback leve no HUD sem mudar de estado (gravação continua).
