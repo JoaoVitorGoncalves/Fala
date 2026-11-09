@@ -647,15 +647,24 @@ fn stop_recording_and_transcribe(app: &AppHandle) {
         // (ou tudo já confirmado), a cauda é o ditado inteiro — comportamento
         // clássico. Correções do usuário e o polimento IA se aplicam ao resultado.
         let result = if tail.is_empty() {
-            Ok(live.committed_text.clone())
+            let (pending, had_buffer) = take_command_buffer(&app, "");
+            if had_buffer && !pending.is_empty() {
+                diag(&format!("comando pendente liberado como texto: {pending}"));
+                Ok(if live.committed_text.is_empty() {
+                    pending
+                } else {
+                    format!("{} {pending}", live.committed_text.trim())
+                })
+            } else {
+                Ok(live.committed_text.clone())
+            }
         } else {
             app.state::<AppState>()
                 .transcriber
                 .transcribe(&tail, &model_path, &language, vocab_prompt.as_deref())
                 .map(|text| apply_corrections(text, &corrections))
+                .map(|text| take_command_buffer(&app, &text).0)
         };
-
-        let result = result.map(|text| take_command_buffer(&app, &text));
         let payload = match result {
             Ok(text) if text.is_empty() => {
                 if !live.committed_text.is_empty() {
@@ -691,7 +700,7 @@ fn stop_recording_and_transcribe(app: &AppHandle) {
                             serde_json::json!({ "ok": true, "text": text })
                         }
                     }
-                } else if tail.is_empty() {
+                } else if tail.is_empty() && text == live.committed_text {
                     // tudo já foi digitado pelos commits ao vivo
                     serde_json::json!({ "ok": true, "text": text })
                 } else if meeting_mode {
@@ -1243,10 +1252,11 @@ pub(crate) fn command_decision(app: &AppHandle, text: &str) -> CommandDecision {
 
 /// Junta prefixo retido com a cauda final. O prefixo só foi retido porque a
 /// gravação ainda podia completar um comando no stop.
-pub(crate) fn take_command_buffer(app: &AppHandle, text: &str) -> String {
+pub(crate) fn take_command_buffer(app: &AppHandle, text: &str) -> (String, bool) {
     let state = app.state::<AppState>();
     let mut buffer = state.command_buffer.lock().unwrap();
-    let output = if buffer.trim().is_empty() {
+    let had_buffer = !buffer.trim().is_empty();
+    let output = if !had_buffer {
         text.trim().to_string()
     } else if text.trim().is_empty() {
         buffer.trim().to_string()
@@ -1254,7 +1264,7 @@ pub(crate) fn take_command_buffer(app: &AppHandle, text: &str) -> String {
         format!("{} {}", buffer.trim(), text.trim())
     };
     buffer.clear();
-    output
+    (output, had_buffer)
 }
 
 /// Feedback leve no HUD sem mudar de estado (gravação continua).
