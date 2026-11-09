@@ -15,7 +15,7 @@ use whisper_rs::{WhisperVadContext, WhisperVadContextParams, WhisperVadParams};
 
 use crate::audio::{self, RecorderHandle};
 use crate::inject;
-use crate::{apply_corrections, diag, AppState, Status};
+use crate::{AppState, Status, apply_corrections, diag};
 
 const TICK: Duration = Duration::from_millis(120);
 /// Pausa que fecha um trecho e o confirma (bem abaixo do auto-stop `silence_ms`)
@@ -34,9 +34,8 @@ const PROMPT_CHARS: usize = 224;
 pub struct LiveResult {
     /// Texto confirmado e digitado (diagnóstico + semântica da sessão).
     pub committed_text: String,
-    /// Áudio 16 kHz do trecho que ficou aberto — revisado pelo modelo grande
-    /// no encerramento, no lib.rs.
-    pub tail: Vec<f32>,
+    /// Número de amostras 16 kHz já confirmadas pelo live worker.
+    pub committed_samples: usize,
 }
 
 pub fn spawn(
@@ -47,6 +46,7 @@ pub fn spawn(
     vocab_prompt: Option<String>,
     corrections: Option<String>,
     generation: u64,
+    meeting_mode: bool,
 ) -> std::thread::JoinHandle<LiveResult> {
     std::thread::spawn(move || {
         run(
@@ -57,6 +57,7 @@ pub fn spawn(
             vocab_prompt,
             corrections,
             generation,
+            meeting_mode,
         )
     })
 }
@@ -69,6 +70,7 @@ fn run(
     vocab_prompt: Option<String>,
     corrections: Option<String>,
     generation: u64,
+    meeting_mode: bool,
 ) -> LiveResult {
     let rate = audio_handle.sample_rate();
 
@@ -79,7 +81,9 @@ fn run(
         match WhisperVadContext::new(&path, params) {
             Ok(c) => Some(c),
             Err(e) => {
-                diag(&format!("live: VAD indisponível ({e}); usando bordas por RMS"));
+                diag(&format!(
+                    "live: VAD indisponível ({e}); usando bordas por RMS"
+                ));
                 None
             }
         }
@@ -122,9 +126,7 @@ fn run(
 
         let uncommitted = samples16k.len() - committed_until;
         let has_voice = last_voice_idx > committed_until;
-        let paused = last_voice_at
-            .map(|t| t.elapsed() >= PAUSE)
-            .unwrap_or(false);
+        let paused = last_voice_at.map(|t| t.elapsed() >= PAUSE).unwrap_or(false);
 
         // fecha o trecho: pausa após fala, ou teto de fala contínua
         let boundary = if has_voice && paused && uncommitted >= MIN_CHUNK_SAMPLES {
@@ -157,14 +159,18 @@ fn run(
 
         let started = Instant::now();
         let prompt = chunk_prompt(&vocab_prompt, &committed_text);
-        let text = app
-            .state::<AppState>()
-            .transcriber
-            .decode_segment(speech, model_path, language, prompt.as_deref());
+        let text = app.state::<AppState>().transcriber.decode_segment(
+            speech,
+            model_path,
+            language,
+            prompt.as_deref(),
+        );
         let text = match text {
             Ok(t) => t,
             Err(e) => {
-                diag(&format!("live: decode do trecho falhou ({e}); cauda vai para a revisão final"));
+                diag(&format!(
+                    "live: decode do trecho falhou ({e}); cauda vai para a revisão final"
+                ));
                 break;
             }
         };
@@ -192,58 +198,71 @@ fn run(
             committed_until = boundary;
             continue;
         }
-        // comando de voz: frase exata vira ação — nunca vira texto colado
-        if let Some(cmd) = crate::detect_command(&text) {
-            committed_until = boundary;
-            match crate::execute_command(&app, cmd) {
-                Ok(feedback) => {
-                    diag(&format!("live: comando executado: {feedback}"));
-                    crate::hud_chip(&app, feedback);
-                }
-                Err(e) => {
-                    diag(&format!("live: comando falhou: {e}"));
-                    crate::hud_chip(&app, &format!("Comando falhou: {e}"));
-                }
+        // comando de voz: o parser mantém prefixos entre chunks.
+        match crate::command_decision(&app, &text) {
+            crate::CommandDecision::Pending => {
+                diag(&format!("live: prefixo de comando retido: {text}"));
+                committed_until = boundary;
+                continue;
             }
-            continue;
+            crate::CommandDecision::Execute(cmd) => {
+                committed_until = boundary;
+                match crate::execute_command(&app, cmd) {
+                    Ok(feedback) => {
+                        diag(&format!("live: comando executado: {feedback}"));
+                        crate::hud_chip(&app, feedback);
+                    }
+                    Err(e) => {
+                        diag(&format!("live: comando falhou: {e}"));
+                        crate::hud_chip(&app, &format!("Comando falhou: {e}"));
+                    }
+                }
+                continue;
+            }
+            crate::CommandDecision::Text(text) => {
+                // segue no mesmo ciclo com o texto normalizado/liberado
+                if text.is_empty() {
+                    committed_until = boundary;
+                    continue;
+                }
+                // modo reunião é congelado no início da sessão: salvar settings durante
+                // a gravação nunca alterna entre colar e capturar.
+                if meeting_mode {
+                    committed_text.push_str(&format!(
+                        "{}{text}",
+                        if committed_text.is_empty() { "" } else { " " }
+                    ));
+                    committed_until = boundary;
+                    crate::enqueue_polish(&app, text.clone());
+                    continue;
+                }
+                let sep = if committed_text.is_empty() { "" } else { " " };
+                let to_type = format!("{sep}{text}");
+                if let Err(e) = inject::type_text_on_main(&app, &to_type) {
+                    diag(&format!(
+                        "live: digitação falhou ({e}); restante vai para a revisão final"
+                    ));
+                    // não avança committed_until: o trecho não digitado entra na cauda
+                    // e é entregue pela revisão final (nada é perdido nem duplicado)
+                    break;
+                }
+                committed_text.push_str(&to_type);
+                app.state::<AppState>()
+                    .injected
+                    .lock()
+                    .unwrap()
+                    .push(to_type.chars().count());
+                committed_until = boundary;
+                // versão limpa: o trecho cru vai para o worker de polimento async —
+                // nunca bloqueia a digitação do próximo trecho
+                crate::enqueue_polish(&app, text.clone());
+            }
         }
-        // modo reunião: nada é colado — o trecho só alimenta o painel e o
-        // contexto do prompt (a revisão final também não injeta)
-        let meeting = app.state::<AppState>().settings.lock().unwrap().meeting_mode;
-        if meeting {
-            committed_text.push_str(&format!(
-                "{}{text}",
-                if committed_text.is_empty() { "" } else { " " }
-            ));
-            committed_until = boundary;
-            crate::enqueue_polish(&app, text.clone());
-            continue;
-        }
-        let sep = if committed_text.is_empty() { "" } else { " " };
-        let to_type = format!("{sep}{text}");
-        if let Err(e) = inject::type_text_on_main(&app, &to_type) {
-            diag(&format!(
-                "live: digitação falhou ({e}); restante vai para a revisão final"
-            ));
-            // não avança committed_until: o trecho não digitado entra na cauda
-            // e é entregue pela revisão final (nada é perdido nem duplicado)
-            break;
-        }
-        committed_text.push_str(&to_type);
-        app.state::<AppState>()
-            .injected
-            .lock()
-            .unwrap()
-            .push(to_type.chars().count());
-        committed_until = boundary;
-        // versão limpa: o trecho cru vai para o worker de polimento async —
-        // nunca bloqueia a digitação do próximo trecho
-        crate::enqueue_polish(&app, text.clone());
     }
 
     LiveResult {
         committed_text,
-        tail: samples16k[committed_until.min(samples16k.len())..].to_vec(),
+        committed_samples: committed_until,
     }
 }
 
@@ -348,7 +367,10 @@ fn tail_chars(s: &str, n: usize) -> Option<String> {
 
 /// Normaliza a saída de um trecho: espaços colapsados e reticências limpas.
 fn normalize_stream(raw: &str) -> String {
-    let t = raw.trim().trim_start_matches(['…', '.']).trim_end_matches('…');
+    let t = raw
+        .trim()
+        .trim_start_matches(['…', '.'])
+        .trim_end_matches('…');
     let t = t.trim().trim_end_matches("...");
     t.split_whitespace().collect::<Vec<_>>().join(" ")
 }

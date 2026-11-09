@@ -219,7 +219,9 @@ function App() {
       load().catch(() => {});
     });
     const unClean = listen<{ id: number; text: string }>("clean-version", (ev) => {
-      setLastClean((prev) => prev ? `${prev} ${ev.payload.text}` : ev.payload.text);
+      // O painel é a fonte ordenada; aqui mantemos apenas a última versão
+      // limpa para não concatenar eventos de lote fora de ordem.
+      setLastClean(ev.payload.text);
     });
     return () => {
       un.then((f) => f());
