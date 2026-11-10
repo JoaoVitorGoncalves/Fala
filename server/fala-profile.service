@@ -1,0 +1,15 @@
+[Unit]
+Description=Fala — serviço de personalização (perfil compartilhado)
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/python3 /opt/fala/fala-profile.py
+Environment=FALA_PROFILE_PATH=/etc/fala/personalizacao.json
+EnvironmentFile=-/etc/fala/token.env
+Restart=always
+RestartSec=3
+User=fala
+Group=fala
+
+[Install]
+WantedBy=multi-user.target

@@ -31,6 +31,54 @@ pub struct Settings {
     pub live_transcribe: bool,
     /// Modelo rápido (ggml) para as parciais ao vivo; None = usa o default detectável
     pub live_model_path: Option<String>,
+    /// Modo reunião: capturar SEM colar — tudo acumula no painel "versão limpa"
+    pub meeting_mode: bool,
+    /// IA remota + perfil de personalização compartilhado (None = desativada)
+    pub ai: Option<AiSettings>,
+}
+
+/// IA de polimento servida no servidor (Ollama via Tailscale) + o perfil
+/// compartilhado (vocabulário, correções, prompt) — um só para todos os
+/// dispositivos. O servidor vence no boot/sync; o app vence ao salvar.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AiSettings {
+    /// Polimento LLM ativo na revisão final da cauda (trechos ao vivo não passam pela IA)
+    pub enabled: bool,
+    /// URL base do Ollama — ex. http://fala-servidor:11434 (localhost = Ollama local)
+    pub endpoint: String,
+    /// URL do serviço de personalização (fala-profile) — ex. http://fala-servidor:8338
+    pub profile_url: String,
+    /// Token Bearer do serviço de personalização
+    pub token: String,
+    /// Modelo no Ollama — ex. llama3.1:8b-instruct-q4_K_M
+    pub model: String,
+    /// Timeout do polimento em segundos (estourar = texto entra sem polir).
+    /// 45s cobre o caso frio do 3b na VM de 2 vCPU (~37s com carga do modelo).
+    pub timeout_secs: u32,
+    /// Puxar o perfil do servidor quando o app inicia
+    pub sync_profile: bool,
+    /// Prompt de sistema do polimento (sincronizado com o servidor)
+    pub system_prompt: Option<String>,
+    /// Esperar o polimento IA antes de colar (default: cola rápido; a versão
+    /// limpa vai async para o painel/evento clean-version)
+    pub polish_before_paste: bool,
+}
+
+impl Default for AiSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            endpoint: String::new(),
+            profile_url: String::new(),
+            token: String::new(),
+            model: "llama3.2:3b".into(),
+            timeout_secs: 45,
+            sync_profile: true,
+            system_prompt: Some(crate::llm::default_system_prompt().to_string()),
+            polish_before_paste: false,
+        }
+    }
 }
 
 impl Default for Settings {
@@ -49,6 +97,8 @@ impl Default for Settings {
             corrections: None,
             live_transcribe: true,
             live_model_path: None,
+            meeting_mode: false,
+            ai: None,
         }
     }
 }

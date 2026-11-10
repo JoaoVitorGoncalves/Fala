@@ -3,10 +3,14 @@ import ReactDOM from "react-dom/client";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import App from "./App";
 import Hud from "./Hud";
+import TranscriptPanel from "./TranscriptPanel";
 
 const label = getCurrentWindow().label;
 if (label === "hud") {
   document.body.classList.add("hud-body");
+}
+if (label === "panel") {
+  document.body.classList.add("panel-body");
 }
 // O vibrancy/Liquid Glass é exclusivo do macOS; no Windows as janelas
 // transparentes viram vidro total e o conteúdo fica ilegível. A classe
@@ -16,5 +20,7 @@ if (navigator.userAgent.includes("Windows NT")) {
 }
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
-  <React.StrictMode>{label === "hud" ? <Hud /> : <App />}</React.StrictMode>,
+  <React.StrictMode>
+    {label === "hud" ? <Hud /> : label === "panel" ? <TranscriptPanel /> : <App />}
+  </React.StrictMode>,
 );

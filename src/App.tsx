@@ -4,6 +4,18 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import "./App.css";
 
+interface AiSettings {
+  enabled: boolean;
+  endpoint: string;
+  profile_url: string;
+  token: string;
+  model: string;
+  timeout_secs: number;
+  sync_profile: boolean;
+  system_prompt: string | null;
+  polish_before_paste: boolean;
+}
+
 interface Settings {
   hotkey: string;
   mode: string;
@@ -18,6 +30,8 @@ interface Settings {
   corrections: string | null;
   live_transcribe: boolean;
   live_model_path: string | null;
+  meeting_mode: boolean;
+  ai: AiSettings | null;
 }
 
 interface SettingsInfo {
@@ -43,6 +57,19 @@ const STATUS_LABEL: Record<string, string> = {
   idle: "Pronto",
   recording: "Gravando…",
   transcribing: "Transcrevendo…",
+};
+
+// espelha AiSettings::default() no backend (usado ao ligar a IA pela 1ª vez)
+const DEFAULT_AI: AiSettings = {
+  enabled: true,
+  endpoint: "",
+  profile_url: "",
+  token: "",
+  model: "llama3.2:3b",
+  timeout_secs: 45,
+  sync_profile: true,
+  system_prompt: null,
+  polish_before_paste: false,
 };
 
 // teclas que sozinhas não viram atalho (o macOS não registra modificador puro)
@@ -149,11 +176,22 @@ function App() {
   const [capturing, setCapturing] = useState(false);
   // download do modelo rápido em andamento: bytes recebidos (null = parado)
   const [dl, setDl] = useState<number | null>(null);
+  // status do teste de conexão / sync do perfil da IA do servidor
+  const [aiStatus, setAiStatus] = useState<string | null>(null);
+  // conflito HFP: mic BT selecionado com fone BT na saída ("efeito copo")
+  const [btConflict, setBtConflict] = useState<{ input: string; suggestion: string | null } | null>(
+    null,
+  );
+  // versão limpa (polida pela IA) chegando async após a injeção
+  const [lastClean, setLastClean] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     const i = await invoke<SettingsInfo>("get_settings");
     setInfo(i);
     setDraft(i.settings);
+    invoke<{ input: string; suggestion: string | null } | null>("audio_conflict")
+      .then(setBtConflict)
+      .catch(() => setBtConflict(null));
   }, []);
 
   useEffect(() => {
@@ -192,8 +230,14 @@ function App() {
       }
       load().catch(() => {});
     });
+    const unClean = listen<{ id: number; text: string }>("clean-version", (ev) => {
+      // O painel é a fonte ordenada; aqui mantemos apenas a última versão
+      // limpa para não concatenar eventos de lote fora de ordem.
+      setLastClean(ev.payload.text);
+    });
     return () => {
       un.then((f) => f());
+      unClean.then((f) => f());
     };
   }, [load]);
 
@@ -267,6 +311,63 @@ function App() {
     }
   }
 
+  // teste da conexão com a IA do servidor (resultado chega pelo evento ai-test-result)
+  async function testAi() {
+    setError(null);
+    setAiStatus("Testando conexão…");
+    try {
+      await invoke("test_ai");
+    } catch (e) {
+      setAiStatus(`Falhou: ${String(e)}`);
+    }
+  }
+
+  // puxa o perfil de personalização do servidor (resultado chega por profile-synced)
+  async function syncProfile() {
+    setError(null);
+    setAiStatus("Sincronizando…");
+    try {
+      await invoke("sync_profile");
+    } catch (e) {
+      setAiStatus(`Falhou: ${String(e)}`);
+    }
+  }
+
+  // resultado do teste de conexão com o Ollama
+  useEffect(() => {
+    const un = listen<{ ok: boolean; models?: string[]; error?: string }>(
+      "ai-test-result",
+      (ev) => {
+        if (ev.payload.ok) {
+          const ms = ev.payload.models ?? [];
+          setAiStatus(
+            `Conectado ✓${ms.length ? ` — modelos: ${ms.join(", ")}` : " — nenhum modelo instalado"}`,
+          );
+        } else {
+          setAiStatus(`Falhou: ${ev.payload.error ?? "erro desconhecido"}`);
+        }
+      },
+    );
+    return () => {
+      un.then((f) => f());
+    };
+  }, []);
+
+  // pull/push do perfil de personalização concluídos no backend
+  useEffect(() => {
+    const un = listen<{ ok: boolean; error?: string }>("profile-synced", (ev) => {
+      if (ev.payload.ok) {
+        setAiStatus("Personalização sincronizada ✓");
+        load().catch(() => {});
+      } else {
+        setAiStatus(`Sync falhou: ${ev.payload.error ?? "erro desconhecido"}`);
+      }
+    });
+    return () => {
+      un.then((f) => f());
+    };
+  }, [load]);
+
   async function grantAccessibility() {
     await invoke("open_accessibility_prefs");
   }
@@ -282,6 +383,12 @@ function App() {
 
   function patch(p: Partial<Settings>) {
     setDraft({ ...draft!, ...p });
+  }
+
+  // campos aninhados da IA (cria o objeto com defaults ao ligar pela 1ª vez)
+  function patchAi(p: Partial<AiSettings>) {
+    const ai: AiSettings = { ...DEFAULT_AI, ...(draft!.ai ?? {}), ...p };
+    setDraft({ ...draft!, ai });
   }
 
   return (
@@ -417,7 +524,144 @@ function App() {
           </div>
         </div>
         <p className="hint">
-          Correções no formato <code>errado = correto</code>, aplicadas ao texto final.
+          {draft.ai?.enabled && draft.ai.profile_url.trim() ? (
+            "Sincronizado com o servidor: salvar envia vocabulário e correções para todos os dispositivos."
+          ) : (
+            <>
+              Correções no formato <code>errado = correto</code>, aplicadas ao texto final.
+            </>
+          )}
+        </p>
+      </section>
+
+      <section className="group">
+        <h2>IA do servidor</h2>
+        <div className="card">
+          <div className="row">
+            <span className="row-icon t-purple">
+              <Sym d={IC.sparkles} />
+            </span>
+            <div className="row-col">
+              <span className="row-label">Polimento com LLM</span>
+              <span className="row-sub">
+                A revisão final passa pela IA servida no seu servidor — um só
+                cérebro e um só perfil para todos os dispositivos
+              </span>
+            </div>
+            <span className="row-end">
+              <label className="switch">
+                <input
+                  type="checkbox"
+                  checked={draft.ai?.enabled ?? false}
+                  onChange={(e) => patchAi({ enabled: e.target.checked })}
+                />
+                <span />
+              </label>
+            </span>
+          </div>
+          {draft.ai?.enabled && (
+            <>
+              <div className="field-pad">
+                <input
+                  value={draft.ai.endpoint}
+                  onChange={(e) => patchAi({ endpoint: e.target.value })}
+                  placeholder="Ollama — ex. http://fala-servidor:11434"
+                  spellCheck={false}
+                />
+                <input
+                  value={draft.ai.profile_url}
+                  onChange={(e) => patchAi({ profile_url: e.target.value })}
+                  placeholder="Personalização — ex. http://fala-servidor:8338"
+                  spellCheck={false}
+                />
+                <input
+                  type="password"
+                  value={draft.ai.token}
+                  onChange={(e) => patchAi({ token: e.target.value })}
+                  placeholder="Token do serviço de personalização"
+                  spellCheck={false}
+                />
+                <input
+                  value={draft.ai.model}
+                  onChange={(e) => patchAi({ model: e.target.value })}
+                  placeholder="Modelo — ex. llama3.1:8b-instruct-q4_K_M"
+                  spellCheck={false}
+                />
+              </div>
+              <div className="row">
+                <span className="row-col">
+                  <span className="row-label">Sincronizar perfil ao iniciar</span>
+                  <span className="row-sub">
+                    Vocabulário, correções e prompt vêm do servidor (servidor vence no boot)
+                  </span>
+                </span>
+                <span className="row-end">
+                  <label className="switch">
+                    <input
+                      type="checkbox"
+                      checked={draft.ai.sync_profile}
+                      onChange={(e) => patchAi({ sync_profile: e.target.checked })}
+                    />
+                    <span />
+                  </label>
+                </span>
+              </div>
+              <div className="row">
+                <span className="row-label">Timeout do polimento</span>
+                <span className="row-end">
+                  <input
+                    className="narrow"
+                    type="number"
+                    min={2}
+                    max={120}
+                    value={draft.ai.timeout_secs}
+                    onChange={(e) => patchAi({ timeout_secs: Number(e.target.value) || 20 })}
+                  />
+                  <span className="row-value">seg</span>
+                </span>
+              </div>
+              <div className="row">
+                <span className="row-col">
+                  <span className="row-label">Esperar IA antes de colar</span>
+                  <span className="row-sub">
+                    Cola o texto polido (mais demorado). Desligado: cola rápido e
+                    a versão limpa chega no painel "Versão limpa" da tray.
+                  </span>
+                </span>
+                <span className="row-end">
+                  <label className="switch">
+                    <input
+                      type="checkbox"
+                      checked={draft.ai.polish_before_paste}
+                      onChange={(e) => patchAi({ polish_before_paste: e.target.checked })}
+                    />
+                    <span />
+                  </label>
+                </span>
+              </div>
+              <div className="row">
+                <span className="row-label">Prompt de sistema da IA</span>
+              </div>
+              <div className="field-pad">
+                <textarea
+                  rows={3}
+                  value={draft.ai.system_prompt ?? ""}
+                  onChange={(e) => patchAi({ system_prompt: e.target.value || null })}
+                  placeholder="Instruções de polimento — salvas também no servidor"
+                  spellCheck={false}
+                />
+              </div>
+              <div className="row">
+                <button onClick={testAi}>Testar conexão</button>
+                <button onClick={syncProfile}>Sincronizar agora</button>
+              </div>
+              {aiStatus && <p className="row-hint">{aiStatus}</p>}
+            </>
+          )}
+        </div>
+        <p className="hint">
+          Sem IA (ou servidor fora do ar), o texto entra só com as correções
+          locais — o ditado nunca depende da rede.
         </p>
       </section>
 
@@ -474,6 +718,34 @@ function App() {
       </section>
 
       <section className="group">
+        <h2>Modo reunião</h2>
+        <div className="card">
+          <div className="row">
+            <span className="row-icon t-indigo">
+              <Sym d={IC.wave} />
+            </span>
+            <div className="row-col">
+              <span className="row-label">Capturar sem colar</span>
+              <span className="row-sub">
+                Nada é colado em outros apps — a transcrição acumula no painel
+                “Versão limpa” da tray, com a IA limpando cada trecho. Copie no final.
+              </span>
+            </div>
+            <span className="row-end">
+              <label className="switch">
+                <input
+                  type="checkbox"
+                  checked={draft.meeting_mode}
+                  onChange={(e) => patch({ meeting_mode: e.target.checked })}
+                />
+                <span />
+              </label>
+            </span>
+          </div>
+        </div>
+      </section>
+
+      <section className="group">
         <h2>Idioma</h2>
         <div className="card">
           <div className="row">
@@ -516,6 +788,29 @@ function App() {
               </select>
             </span>
           </div>
+          {btConflict && (
+            <div className="row">
+              <span className="row-icon t-orange">
+                <Sym d={IC.alert} />
+              </span>
+              <div className="row-col">
+                <span className="row-label">Conflito de áudio Bluetooth</span>
+                <span className="row-sub">
+                  O microfone de “{btConflict.input}” força o fone para o perfil
+                  de ligação e degrada a música enquanto o Fala grava
+                  (“efeito copo”).
+                  {btConflict.suggestion ? ` Sugestão: ${btConflict.suggestion}.` : ""}
+                </span>
+              </div>
+              {btConflict.suggestion && (
+                <span className="row-end">
+                  <button onClick={() => patch({ device: btConflict.suggestion! })}>
+                    Trocar microfone
+                  </button>
+                </span>
+              )}
+            </div>
+          )}
         </div>
       </section>
 
@@ -620,6 +915,19 @@ function App() {
           <h2>Última transcrição</h2>
           <div className="card">
             <blockquote>“{lastTranscription}”</blockquote>
+            {lastClean && (
+              <>
+                <div className="row">
+                  <span className="row-icon t-pink">
+                    <Sym d={IC.sparkles} />
+                  </span>
+                  <span className="row-label">Versão limpa (IA)</span>
+                </div>
+                <div className="field-pad">
+                  <textarea rows={3} value={lastClean} readOnly spellCheck={false} />
+                </div>
+              </>
+            )}
           </div>
         </section>
       )}

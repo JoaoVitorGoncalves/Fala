@@ -21,6 +21,25 @@ export default function Hud() {
   const targetsRef = useRef<number[]>(new Array(BARS).fill(0.06));
   const barsRef = useRef<number[]>(new Array(BARS).fill(0.06));
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  // chip de feedback (comandos de voz / avisos) sem trocar de estado
+  const [chip, setChip] = useState<string | null>(null);
+  const chipTimer = useRef<number | null>(null);
+
+  // chips: mensagem transitória sobre o HUD atual
+  useEffect(() => {
+    const un = listen<{ message: string }>("hud-chip", (ev) => {
+      if (chipTimer.current !== null) window.clearTimeout(chipTimer.current);
+      setChip(ev.payload.message);
+      chipTimer.current = window.setTimeout(() => {
+        setChip(null);
+        chipTimer.current = null;
+      }, 1500);
+    });
+    return () => {
+      if (chipTimer.current !== null) window.clearTimeout(chipTimer.current);
+      un.then((f) => f());
+    };
+  }, []);
 
   // estados vindos do Rust
   useEffect(() => {
@@ -130,6 +149,7 @@ export default function Hud() {
 
   return (
     <div className={`hud hud-${state}${leaving ? " hud-leaving" : ""}`}>
+      {chip && <span className="hud-chip">{chip}</span>}
       <div className="hud-content" key={state}>
         {state === "recording" && (
           <div className="hud-recording-content">
@@ -142,7 +162,7 @@ export default function Hud() {
         )}
         {state === "transcribing" && (
           <span className="hud-transcribing">
-            <span className="hud-spinner" /> Transcrevendo…
+            <span className="hud-spinner" /> {message ?? "Transcrevendo…"}
           </span>
         )}
         {state === "done" && (
