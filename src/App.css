@@ -594,3 +594,27 @@ footer {
 @media (prefers-reduced-motion: reduce) {
   * { animation: none !important; transition: none !important; }
 }
+
+/* ============================================================
+   Windows — material quase opaco (macOS intocado)
+   O vibrancy "sidebar" não existe no Windows: com body transparente
+   a janela enxerga o desktop inteiro e o conteúdo fica ilegível.
+   Aqui a própria página fornece o material (acrylic-like, sem blur
+   do sistema), mantendo todos os fills translúcidos por cima.
+   ============================================================ */
+
+html.win body {
+  background: rgba(246, 246, 248, 0.965);
+}
+
+@media (prefers-color-scheme: dark) {
+  html.win body {
+    background: rgba(30, 30, 32, 0.965);
+  }
+}
+
+/* Sem os semáforos do macOS há título nativo do Windows: recua o recuo
+   de 78px (folga dos semáforos) para o padding normal da página. */
+html.win header {
+  padding-left: 20px;
+}

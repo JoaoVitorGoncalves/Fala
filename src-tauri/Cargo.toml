@@ -36,6 +36,11 @@ whisper-rs = { version = "0.16", features = ["metal"] }
 # já entra na árvore via cpal/coreaudio-rs, aqui só consultamos direto
 coreaudio-sys = "0.2"
 
+# Windows: aceleração por GPU (CUDA). Exige CUDA Toolkit instalado (CUDA_PATH);
+# sem ele o build falha — os kernels são compilados pelo nvcc no build.rs.
+[target."cfg(target_os = \"windows\")".dependencies]
+whisper-rs = { version = "0.16", features = ["cuda"] }
+
 # Read more about optimization here: https://tauri.app/concept/size/#cargo-configuration
 [profile.release]
 codegen-units = 1

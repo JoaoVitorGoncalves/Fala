@@ -1,0 +1,19 @@
+# whisper.cpp compilado sem /O2: o cmake-rs substitui CMAKE_<LANG>_FLAGS_RELEASE
+# pelas flags base do cargo (sem otimização) quando ninguém as define — e o
+# build.rs do whisper-rs-sys repassa variáveis CMAKE_*/GGML_* do ambiente como
+# defines. Definir aqui restaura a otimização (a diferença é ~60x na inferência)
+# e habilita as extensões SIMD da CPU alvo (Zen 3: AVX2/FMA/F16C).
+[env]
+# CUDA no Windows: o gerador "Visual Studio" do CMake exige a integração CUDA
+# instalada dentro do VS; com Ninja o nvcc é usado direto. O build precisa do
+# ambiente do VC (vcvars64) e do nvcc no PATH — ver scripts/build-windows-cuda.cmd.
+CMAKE_GENERATOR = "Ninja"
+CMAKE_C_FLAGS_RELEASE = "/MD /O2 /Ob2 /DNDEBUG"
+CMAKE_CXX_FLAGS_RELEASE = "/utf-8 /MD /O2 /Ob2 /DNDEBUG"
+CMAKE_C_FLAGS_RELWITHDEBINFO = "/MD /Zi /O2 /Ob2 /DNDEBUG"
+CMAKE_CXX_FLAGS_RELWITHDEBINFO = "/utf-8 /MD /Zi /O2 /Ob2 /DNDEBUG"
+GGML_SSE42 = "ON"
+GGML_F16C = "ON"
+GGML_FMA = "ON"
+GGML_AVX = "ON"
+GGML_AVX2 = "ON"
