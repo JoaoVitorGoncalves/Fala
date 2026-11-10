@@ -31,6 +31,8 @@ pub struct Settings {
     pub live_transcribe: bool,
     /// Modelo rápido (ggml) para as parciais ao vivo; None = usa o default detectável
     pub live_model_path: Option<String>,
+    /// Modo reunião: capturar SEM colar — tudo acumula no painel "versão limpa"
+    pub meeting_mode: bool,
     /// IA remota + perfil de personalização compartilhado (None = desativada)
     pub ai: Option<AiSettings>,
 }
@@ -58,6 +60,9 @@ pub struct AiSettings {
     pub sync_profile: bool,
     /// Prompt de sistema do polimento (sincronizado com o servidor)
     pub system_prompt: Option<String>,
+    /// Esperar o polimento IA antes de colar (default: cola rápido; a versão
+    /// limpa vai async para o painel/evento clean-version)
+    pub polish_before_paste: bool,
 }
 
 impl Default for AiSettings {
@@ -71,6 +76,7 @@ impl Default for AiSettings {
             timeout_secs: 45,
             sync_profile: true,
             system_prompt: Some(crate::llm::default_system_prompt().to_string()),
+            polish_before_paste: false,
         }
     }
 }
@@ -91,6 +97,7 @@ impl Default for Settings {
             corrections: None,
             live_transcribe: true,
             live_model_path: None,
+            meeting_mode: false,
             ai: None,
         }
     }

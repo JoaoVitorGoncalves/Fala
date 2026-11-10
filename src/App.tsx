@@ -13,6 +13,7 @@ interface AiSettings {
   timeout_secs: number;
   sync_profile: boolean;
   system_prompt: string | null;
+  polish_before_paste: boolean;
 }
 
 interface Settings {
@@ -29,6 +30,7 @@ interface Settings {
   corrections: string | null;
   live_transcribe: boolean;
   live_model_path: string | null;
+  meeting_mode: boolean;
   ai: AiSettings | null;
 }
 
@@ -67,6 +69,7 @@ const DEFAULT_AI: AiSettings = {
   timeout_secs: 45,
   sync_profile: true,
   system_prompt: null,
+  polish_before_paste: false,
 };
 
 // teclas que sozinhas não viram atalho (o macOS não registra modificador puro)
@@ -175,11 +178,20 @@ function App() {
   const [dl, setDl] = useState<number | null>(null);
   // status do teste de conexão / sync do perfil da IA do servidor
   const [aiStatus, setAiStatus] = useState<string | null>(null);
+  // conflito HFP: mic BT selecionado com fone BT na saída ("efeito copo")
+  const [btConflict, setBtConflict] = useState<{ input: string; suggestion: string | null } | null>(
+    null,
+  );
+  // versão limpa (polida pela IA) chegando async após a injeção
+  const [lastClean, setLastClean] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     const i = await invoke<SettingsInfo>("get_settings");
     setInfo(i);
     setDraft(i.settings);
+    invoke<{ input: string; suggestion: string | null } | null>("audio_conflict")
+      .then(setBtConflict)
+      .catch(() => setBtConflict(null));
   }, []);
 
   useEffect(() => {
@@ -218,8 +230,14 @@ function App() {
       }
       load().catch(() => {});
     });
+    const unClean = listen<{ id: number; text: string }>("clean-version", (ev) => {
+      // O painel é a fonte ordenada; aqui mantemos apenas a última versão
+      // limpa para não concatenar eventos de lote fora de ordem.
+      setLastClean(ev.payload.text);
+    });
     return () => {
       un.then((f) => f());
+      unClean.then((f) => f());
     };
   }, [load]);
 
@@ -603,6 +621,25 @@ function App() {
                 </span>
               </div>
               <div className="row">
+                <span className="row-col">
+                  <span className="row-label">Esperar IA antes de colar</span>
+                  <span className="row-sub">
+                    Cola o texto polido (mais demorado). Desligado: cola rápido e
+                    a versão limpa chega no painel "Versão limpa" da tray.
+                  </span>
+                </span>
+                <span className="row-end">
+                  <label className="switch">
+                    <input
+                      type="checkbox"
+                      checked={draft.ai.polish_before_paste}
+                      onChange={(e) => patchAi({ polish_before_paste: e.target.checked })}
+                    />
+                    <span />
+                  </label>
+                </span>
+              </div>
+              <div className="row">
                 <span className="row-label">Prompt de sistema da IA</span>
               </div>
               <div className="field-pad">
@@ -681,6 +718,34 @@ function App() {
       </section>
 
       <section className="group">
+        <h2>Modo reunião</h2>
+        <div className="card">
+          <div className="row">
+            <span className="row-icon t-indigo">
+              <Sym d={IC.wave} />
+            </span>
+            <div className="row-col">
+              <span className="row-label">Capturar sem colar</span>
+              <span className="row-sub">
+                Nada é colado em outros apps — a transcrição acumula no painel
+                “Versão limpa” da tray, com a IA limpando cada trecho. Copie no final.
+              </span>
+            </div>
+            <span className="row-end">
+              <label className="switch">
+                <input
+                  type="checkbox"
+                  checked={draft.meeting_mode}
+                  onChange={(e) => patch({ meeting_mode: e.target.checked })}
+                />
+                <span />
+              </label>
+            </span>
+          </div>
+        </div>
+      </section>
+
+      <section className="group">
         <h2>Idioma</h2>
         <div className="card">
           <div className="row">
@@ -723,6 +788,29 @@ function App() {
               </select>
             </span>
           </div>
+          {btConflict && (
+            <div className="row">
+              <span className="row-icon t-orange">
+                <Sym d={IC.alert} />
+              </span>
+              <div className="row-col">
+                <span className="row-label">Conflito de áudio Bluetooth</span>
+                <span className="row-sub">
+                  O microfone de “{btConflict.input}” força o fone para o perfil
+                  de ligação e degrada a música enquanto o Fala grava
+                  (“efeito copo”).
+                  {btConflict.suggestion ? ` Sugestão: ${btConflict.suggestion}.` : ""}
+                </span>
+              </div>
+              {btConflict.suggestion && (
+                <span className="row-end">
+                  <button onClick={() => patch({ device: btConflict.suggestion! })}>
+                    Trocar microfone
+                  </button>
+                </span>
+              )}
+            </div>
+          )}
         </div>
       </section>
 
@@ -827,6 +915,19 @@ function App() {
           <h2>Última transcrição</h2>
           <div className="card">
             <blockquote>“{lastTranscription}”</blockquote>
+            {lastClean && (
+              <>
+                <div className="row">
+                  <span className="row-icon t-pink">
+                    <Sym d={IC.sparkles} />
+                  </span>
+                  <span className="row-label">Versão limpa (IA)</span>
+                </div>
+                <div className="field-pad">
+                  <textarea rows={3} value={lastClean} readOnly spellCheck={false} />
+                </div>
+              </>
+            )}
           </div>
         </section>
       )}
