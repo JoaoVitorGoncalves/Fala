@@ -735,8 +735,8 @@ function App() {
             <div className="row-col">
               <span className="row-label">Capturar sem colar</span>
               <span className="row-sub">
-                Nada é colado em outros apps — a transcrição acumula no painel
-                “Versão limpa” da tray, com a IA limpando cada trecho. Copie no final.
+                Nada é colado em outros apps — cada fala é copiada automaticamente para sua
+                área de transferência (Ctrl+V / Cmd+V e histórico Win+V) e acumula no painel “Versão limpa”.
               </span>
             </div>
             <span className="row-end">

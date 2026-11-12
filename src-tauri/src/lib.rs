@@ -717,13 +717,40 @@ fn stop_recording_and_transcribe(app: &AppHandle) {
                         });
                     }
 
-                    if tail.is_empty() && text == live.committed_text {
+                    if meeting_mode {
+                        // modo reunião: nada é colado no app em foco.
+                        // A cauda vai para o painel 'Versão limpa' e o ditado completo
+                        // é copiado automaticamente para a área de transferência do sistema (Ctrl+V / Win+V).
+                        if !tail.is_empty() {
+                            enqueue_polish(&app, text.clone());
+                        }
+
+                        let to_copy = if polish_before_paste {
+                            let st = app.state::<AppState>();
+                            if st.hud_generation.load(Ordering::Relaxed) == generation
+                                && st.status() == Status::Transcribing
+                            {
+                                hud_state(&app, "transcribing", Some("Polindo com IA…"));
+                            }
+                            ai.as_ref()
+                                .and_then(|a| polish_checked(a, &full))
+                                .unwrap_or_else(|| full.clone())
+                        } else {
+                            full.clone()
+                        };
+
+                        if !to_copy.trim().is_empty() {
+                            let copy_str = to_copy.clone();
+                            let h = app.clone();
+                            let _ = inject::copy_to_clipboard_on_main(&h, &copy_str);
+                            hud_chip(&app, "Copiado para a área de transferência ✓");
+                            diag(&format!("modo reunião: copiado para o clipboard: {copy_str}"));
+                        }
+
+                        serde_json::json!({ "ok": true, "text": to_copy, "meeting": true })
+                    } else if tail.is_empty() && text == live.committed_text {
                         // tudo já foi digitado pelos commits ao vivo
                         serde_json::json!({ "ok": true, "text": text })
-                    } else if meeting_mode {
-                        // modo reunião: nada é colado — a cauda vai só para o painel
-                        enqueue_polish(&app, text.clone());
-                        serde_json::json!({ "ok": true, "text": full, "meeting": true })
                     } else {
                     // Comportamento clássico opt-in: esperar a IA e colar polido.
                     // Padrão: cola rápido (correções locais) e o polimento segue
