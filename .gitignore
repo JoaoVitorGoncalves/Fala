@@ -17,8 +17,20 @@ dist-ssr
 !.vscode/extensions.json
 .idea
 .DS_Store
+.zcode/
 *.suo
 *.ntvs*
 *.njsproj
 *.sln
 *.sw?
+
+# Training artifacts & dataset
+__pycache__/
+*.pyc
+training/venv/
+training/.venv/
+training/data/
+training/output/
+training/.tools/
+*.wav
+*.bin

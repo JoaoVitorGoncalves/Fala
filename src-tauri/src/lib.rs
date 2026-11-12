@@ -2,6 +2,7 @@
 // Segure o atalho global → grava; solte → transcreve com whisper.cpp local → cola no app focado.
 
 mod audio;
+mod dataset;
 mod inject;
 mod live;
 mod llm;
@@ -700,19 +701,30 @@ fn stop_recording_and_transcribe(app: &AppHandle) {
                             serde_json::json!({ "ok": true, "text": text })
                         }
                     }
-                } else if tail.is_empty() && text == live.committed_text {
-                    // tudo já foi digitado pelos commits ao vivo
-                    serde_json::json!({ "ok": true, "text": text })
-                } else if meeting_mode {
-                    // modo reunião: nada é colado — a cauda vai só para o painel
-                    enqueue_polish(&app, text.clone());
+                } else {
                     let full = if live.committed_text.is_empty() {
-                        text
+                        text.clone()
                     } else {
                         format!("{} {text}", live.committed_text.trim())
                     };
-                    serde_json::json!({ "ok": true, "text": full, "meeting": true })
-                } else {
+
+                    // Coleta assíncrona para dataset de fine-tuning (opt-in nas configurações)
+                    if settings.save_dataset && had_speech && !mic_stalled && !full.trim().is_empty() {
+                        let ds_samples = samples.clone();
+                        let ds_text = full.clone();
+                        std::thread::spawn(move || {
+                            let _ = dataset::save_sample(&ds_samples, &ds_text, None);
+                        });
+                    }
+
+                    if tail.is_empty() && text == live.committed_text {
+                        // tudo já foi digitado pelos commits ao vivo
+                        serde_json::json!({ "ok": true, "text": text })
+                    } else if meeting_mode {
+                        // modo reunião: nada é colado — a cauda vai só para o painel
+                        enqueue_polish(&app, text.clone());
+                        serde_json::json!({ "ok": true, "text": full, "meeting": true })
+                    } else {
                     // Comportamento clássico opt-in: esperar a IA e colar polido.
                     // Padrão: cola rápido (correções locais) e o polimento segue
                     // async para o painel/evento clean-version.
@@ -755,6 +767,7 @@ fn stop_recording_and_transcribe(app: &AppHandle) {
                             serde_json::json!({ "ok": false, "error": format!("Falha ao inserir: {e}"), "text": text })
                         }
                     }
+                }
                 }
             }
             Err(e) => {
@@ -1062,6 +1075,8 @@ struct SettingsInfo {
     live_model_available: bool,
     /// caminho resolvido do modelo rápido ("" se ausente)
     live_model_path: String,
+    /// estatísticas do dataset de fine-tuning
+    dataset_stats: dataset::DatasetStats,
 }
 
 /// Espera curta pelo estado (até ~2s): com a WebView2 quente a UI pode invocar
@@ -1090,6 +1105,7 @@ fn get_settings(app: AppHandle) -> Result<SettingsInfo, String> {
         accessibility: inject::accessibility_status(),
         live_model_available: live_path.is_some(),
         live_model_path: live_path.unwrap_or_default(),
+        dataset_stats: dataset::get_stats(),
         settings,
     })
 }
@@ -1186,6 +1202,20 @@ fn panel_clear(app: AppHandle) -> Result<(), String> {
     state.panel.lock().unwrap().clear();
     emit_panel(&app);
     Ok(())
+}
+
+#[tauri::command]
+fn dataset_stats() -> dataset::DatasetStats {
+    dataset::get_stats()
+}
+
+#[tauri::command]
+fn open_dataset_folder(app: AppHandle) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    let dir = dataset::ensure_dataset_dir()?;
+    app.opener()
+        .open_path(dir.to_string_lossy().as_ref(), None::<&str>)
+        .map_err(|e| e.to_string())
 }
 
 // ---------------------------------------------------------------- comandos de voz
@@ -1678,6 +1708,8 @@ pub fn run() {
             panel_state,
             panel_copy,
             panel_clear,
+            dataset_stats,
+            open_dataset_folder,
         ])
         .setup(|app| {
             let settings = settings::load(app.handle());

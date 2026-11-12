@@ -267,7 +267,6 @@ pub fn list_input_devices() -> Vec<String> {
 /// Conflito de áudio Bluetooth: o microfone selecionado é BT e a saída padrão
 /// também — abrir o mic comuta o fone para HFP (perfil de ligação) e degrada a
 /// música ("efeito copo"). `suggestion` = entrada não-BT alternativa, se houver.
-#[cfg(target_os = "macos")]
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct BtConflict {
     pub input_name: String,
@@ -280,7 +279,7 @@ pub fn bt_conflict(selected_input: Option<&str>) -> Option<BtConflict> {
 }
 
 #[cfg(not(target_os = "macos"))]
-pub fn bt_conflict(_selected_input: Option<&str>) -> Option<()> {
+pub fn bt_conflict(_selected_input: Option<&str>) -> Option<BtConflict> {
     None
 }
 

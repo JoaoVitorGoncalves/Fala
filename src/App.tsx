@@ -31,7 +31,14 @@ interface Settings {
   live_transcribe: boolean;
   live_model_path: string | null;
   meeting_mode: boolean;
+  save_dataset: boolean;
   ai: AiSettings | null;
+}
+
+interface DatasetStats {
+  total_samples: number;
+  total_duration_secs: number;
+  dataset_dir: string;
 }
 
 interface SettingsInfo {
@@ -41,6 +48,7 @@ interface SettingsInfo {
   accessibility: boolean;
   live_model_available: boolean;
   live_model_path: string;
+  dataset_stats: DatasetStats;
 }
 
 const IDIOMAS = [
@@ -835,6 +843,55 @@ function App() {
             />
           </div>
         </div>
+      </section>
+
+      <section className="group">
+        <h2>Treinamento do Modelo (Dataset)</h2>
+        <div className="card">
+          <div className="row">
+            <span className="row-icon t-purple">
+              <Sym d={IC.sparkles} />
+            </span>
+            <div className="row-col">
+              <span className="row-label">Coletar áudios para Fine-Tuning</span>
+              <span className="row-sub">
+                Salva os áudios e transcrições dos seus ditados reais em ~/.fala/dataset para treinar um modelo exclusivo
+              </span>
+            </div>
+            <span className="row-end">
+              <label className="switch">
+                <input
+                  type="checkbox"
+                  checked={draft.save_dataset}
+                  onChange={(e) => patch({ save_dataset: e.target.checked })}
+                />
+                <span />
+              </label>
+            </span>
+          </div>
+          <div className="row">
+            <span className="row-icon t-indigo">
+              <Sym d={IC.wave} />
+            </span>
+            <div className="row-col">
+              <span className="row-label">Amostras coletadas</span>
+              <span className="row-sub">
+                {info.dataset_stats && info.dataset_stats.total_samples > 0
+                  ? `${info.dataset_stats.total_samples} gravações (~${(info.dataset_stats.total_duration_secs / 60).toFixed(1)} min de áudio)`
+                  : "Nenhuma amostra salva ainda — ative a opção acima para começar"}
+              </span>
+            </div>
+            <span className="row-end">
+              <button onClick={() => invoke("open_dataset_folder").catch((e) => setError(String(e)))}>
+                Abrir pasta
+              </button>
+            </span>
+          </div>
+        </div>
+        <p className="hint">
+          As gravações são salvas localmente em 16 kHz mono. Quando atingir ~100 amostras,
+          execute o script em <code>training/train_lora.py</code> para gerar seu modelo customizado.
+        </p>
       </section>
 
       <section className="group">
