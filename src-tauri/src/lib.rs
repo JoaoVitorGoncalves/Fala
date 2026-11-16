@@ -1105,6 +1105,21 @@ pub(crate) fn diag(msg: &str) {
 const NO_SPEECH_TIMEOUT_SECS: u64 = 7;
 const NO_SPEECH_TIMEOUT: Duration = Duration::from_secs(NO_SPEECH_TIMEOUT_SECS);
 
+/// Ícones da tray por estado (dot de status colorido — design v2).
+const TRAY_IDLE: &[u8] = include_bytes!("../icons/tray/tray-idle.png");
+const TRAY_REC: &[u8] = include_bytes!("../icons/tray/tray-rec.png");
+const TRAY_BUSY: &[u8] = include_bytes!("../icons/tray/tray-busy.png");
+
+fn tray_icon_for(status: Status) -> tauri::image::Image<'static> {
+    let bytes: &[u8] = match status {
+        Status::Idle => TRAY_IDLE,
+        Status::Recording => TRAY_REC,
+        Status::Transcribing => TRAY_BUSY,
+    };
+    tauri::image::Image::from_bytes(bytes)
+        .expect("PNG da tray embutido e válido")
+}
+
 fn update_tray(app: &AppHandle, status: Status, tooltip_override: Option<&str>) {
     // NSStatusItem (tray) exige a main thread no macOS; esta função também é
     // chamada de threads de gravação/transcrição, então marshal para a principal.
@@ -1116,15 +1131,13 @@ fn update_tray(app: &AppHandle, status: Status, tooltip_override: Option<&str>) 
             Status::Recording => "Fala — gravando…".into(),
             Status::Transcribing => "Fala — transcrevendo…".into(),
         });
+    let icon = tray_icon_for(status);
     let _ = app.run_on_main_thread(move || {
         let Some(tray) = tray_app.tray_by_id(TRAY_ID) else {
             return;
         };
-        let _ = tray.set_title(match status {
-            Status::Idle => None,
-            Status::Recording => Some("● rec"),
-            Status::Transcribing => Some("… txt"),
-        });
+        // O dot colorido no ícone substitui o título textual "● rec"/"… txt".
+        let _ = tray.set_icon(Some(icon));
         let _ = tray.set_tooltip(Some(&tooltip));
     });
 }
@@ -2077,7 +2090,7 @@ pub fn run() {
             let menu = Menu::with_items(app, &[&show, &panel, &quit])?;
 
             TrayIconBuilder::with_id(TRAY_ID)
-                .icon(app.default_window_icon().expect("ícone padrão").clone())
+                .icon(tray_icon_for(Status::Idle))
                 .tooltip("Fala — pronto")
                 .menu(&menu)
                 .show_menu_on_left_click(false)
