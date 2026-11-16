@@ -319,8 +319,10 @@ fn delivery_is_external(delivery: DeliveryMode) -> bool {
 }
 
 fn append_session_text(base: &str, addition: &str) -> String {
-    let base = base.trim_end();
-    let addition = addition.trim();
+    // Preserva quebras de parágrafo: espaços nas bordas são removidos, mas
+    // novas linhas dos dois lados são mantidas (comando "novo parágrafo").
+    let base = trim_edges(base);
+    let addition = trim_edges(addition);
     if base.is_empty() {
         addition.to_string()
     } else if addition.is_empty() {
@@ -330,6 +332,11 @@ fn append_session_text(base: &str, addition: &str) -> String {
     } else {
         format!("{base} {addition}")
     }
+}
+
+/// Apara espaços das bordas mantendo quebras de linha.
+fn trim_edges(s: &str) -> &str {
+    s.trim_matches(|c: char| c.is_whitespace() && c != '\n' && c != '\r')
 }
 
 /// Aplica comandos de voz ao texto ainda mantido em memória. Esse caminho é
