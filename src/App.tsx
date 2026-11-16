@@ -13,6 +13,7 @@ interface AiSettings {
   timeout_secs: number;
   sync_profile: boolean;
   system_prompt: string | null;
+  /** Campo legado; o backend aguarda a IA sempre que ela está ativa. */
   polish_before_paste: boolean;
 }
 
@@ -630,22 +631,13 @@ function App() {
               </div>
               <div className="row">
                 <span className="row-col">
-                  <span className="row-label">Esperar IA antes de colar</span>
+                  <span className="row-label">Entrega após o polimento</span>
                   <span className="row-sub">
-                    Cola o texto polido (mais demorado). Desligado: cola rápido e
-                    a versão limpa chega no painel "Versão limpa" da tray.
+                    Quando a IA está ativa, o Fala sempre aguarda a versão limpa
+                    antes de entregar. Se o servidor falhar, usa o texto original.
                   </span>
                 </span>
-                <span className="row-end">
-                  <label className="switch">
-                    <input
-                      type="checkbox"
-                      checked={draft.ai.polish_before_paste}
-                      onChange={(e) => patchAi({ polish_before_paste: e.target.checked })}
-                    />
-                    <span />
-                  </label>
-                </span>
+                <span className="row-end row-value">Automática</span>
               </div>
               <div className="row">
                 <span className="row-label">Prompt de sistema da IA</span>
@@ -668,8 +660,8 @@ function App() {
           )}
         </div>
         <p className="hint">
-          Sem IA (ou servidor fora do ar), o texto entra só com as correções
-          locais — o ditado nunca depende da rede.
+          Sem IA (ou servidor fora do ar), a entrega usa as correções locais;
+          quando a IA está ativa, o resultado só é entregue após o polimento.
         </p>
       </section>
 
@@ -683,8 +675,8 @@ function App() {
             <div className="row-col">
               <span className="row-label">Palavras ao vivo</span>
               <span className="row-sub">
-                Cada pausa confirma o trecho falado direto no input — sem refazer
-                nada; só o final recebe uma revisão rápida
+                Cada pausa confirma o trecho sem refazer nada. Com Clipboard ou IA,
+                os trechos ficam em memória e são entregues uma vez no final.
               </span>
             </div>
             <span className="row-end">
@@ -735,8 +727,8 @@ function App() {
             <div className="row-col">
               <span className="row-label">Capturar sem colar</span>
               <span className="row-sub">
-                Nada é colado em outros apps — cada fala é copiada automaticamente para sua
-                área de transferência (Ctrl+V / Cmd+V e histórico Win+V) e acumula no painel “Versão limpa”.
+                Nada é colado em outros apps — a transcrição acumula no painel
+                “Versão limpa” da tray, com a IA limpando cada trecho. Copie no final.
               </span>
             </div>
             <span className="row-end">
@@ -902,11 +894,13 @@ function App() {
               <Sym d={IC.clipboard} />
             </span>
             <div className="row-col">
-              <span className="row-label">Entrega do texto</span>
+              <span className="row-label">
+                {draft.paste_mode === "clipboard" ? "Guardar no Clipboard" : "Inserir no campo focado"}
+              </span>
               <span className="row-sub">
                 {draft.paste_mode === "clipboard"
-                  ? "Cola via clipboard — rápido"
-                  : "Digita caractere a caractere — mais compatível"}
+                  ? "Deixa o resultado final no clipboard para você colar manualmente"
+                  : "Digita diretamente no campo atualmente focado — mais compatível"}
               </span>
             </div>
             <span className="row-end">
@@ -914,8 +908,8 @@ function App() {
                 value={draft.paste_mode}
                 onChange={(e) => patch({ paste_mode: e.target.value })}
               >
-                <option value="clipboard">Colar</option>
-                <option value="type">Digitar</option>
+                <option value="clipboard">Guardar no Clipboard</option>
+                <option value="type">Inserir no campo</option>
               </select>
             </span>
           </div>

@@ -1,23 +1,17 @@
 import { useEffect, useRef, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import "./Hud.css";
 
-type HudState = "idle" | "recording" | "transcribing" | "done" | "error";
+type HudState = "idle" | "recording" | "transcribing" | "polishing" | "done" | "error";
 
-const BARS = 38;
-
-function formatElapsed(ms: number) {
-  const seconds = Math.floor(ms / 1000);
-  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
-}
+const BARS = 22;
 
 export default function Hud() {
   const [state, setState] = useState<HudState>("idle");
   const [message, setMessage] = useState<string | null>(null);
   const [leaving, setLeaving] = useState(false);
   const leavingTimerRef = useRef<number | null>(null);
-  const recordingStartedRef = useRef<number | null>(null);
-  const [elapsed, setElapsed] = useState(0);
   const targetsRef = useRef<number[]>(new Array(BARS).fill(0.06));
   const barsRef = useRef<number[]>(new Array(BARS).fill(0.06));
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -41,6 +35,26 @@ export default function Hud() {
     };
   }, []);
 
+  // Aviso curto quando uma entrega final chega ao clipboard ou ao campo focado.
+  // A mesma instância é reutilizada para não sobrepor sons em sessões rápidas.
+  useEffect(() => {
+    const audio = new Audio("/sounds/completion.wav");
+    audio.preload = "auto";
+    audio.load();
+    const un = listen("delivery-complete", () => {
+      audio.currentTime = 0;
+      void audio.play().catch(() => {
+        // A WebView pode bloquear áudio sem gesto local; a entrega já foi concluída.
+      });
+    });
+    return () => {
+      audio.pause();
+      audio.removeAttribute("src");
+      audio.load();
+      un.then((f) => f());
+    };
+  }, []);
+
   // estados vindos do Rust
   useEffect(() => {
     const un = listen<{ state: HudState; message: string | null }>("hud-state", (ev) => {
@@ -51,12 +65,6 @@ export default function Hud() {
       setLeaving(false);
       setState(ev.payload.state);
       setMessage(ev.payload.message);
-      if (ev.payload.state === "recording") {
-        recordingStartedRef.current = performance.now();
-        setElapsed(0);
-      } else {
-        recordingStartedRef.current = null;
-      }
 
       // A saída atua somente na opacidade do shell. O timeout é cancelado
       // quando uma nova gravação/transcrição começa.
@@ -75,17 +83,6 @@ export default function Hud() {
       un.then((f) => f());
     };
   }, []);
-
-  // Timer visível apenas durante a gravação — reforça que o mic está ativo.
-  useEffect(() => {
-    if (state !== "recording") return;
-    const timer = window.setInterval(() => {
-      if (recordingStartedRef.current !== null) {
-        setElapsed(performance.now() - recordingStartedRef.current);
-      }
-    }, 250);
-    return () => window.clearInterval(timer);
-  }, [state]);
 
   // níveis de áudio em tempo real → alvos das barras
   useEffect(() => {
@@ -108,8 +105,8 @@ export default function Hud() {
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    const W = 220;
-    const H = 48;
+    const W = 120;
+    const H = 32;
     const dpr = window.devicePixelRatio || 1;
     canvas.width = W * dpr;
     canvas.height = H * dpr;
@@ -133,7 +130,7 @@ export default function Hud() {
         const idle = 0.07 + 0.04 * (0.5 + 0.5 * Math.sin(phase * 2.2 + i * 0.5));
         const v = Math.max(barsRef.current[i], idle);
 
-        const h = Math.max(4, v * H);
+        const h = Math.max(3, v * H);
         const x = gap + i * (barW + gap);
         const y = (H - h) / 2; // simétrico em torno do centro
         ctx.fillStyle = "rgba(255, 255, 255, 0.95)";
@@ -153,16 +150,55 @@ export default function Hud() {
       <div className="hud-content" key={state}>
         {state === "recording" && (
           <div className="hud-recording-content">
-            <span className="hud-dot" aria-hidden="true" />
-            <canvas ref={canvasRef} className="hud-wave" width={220} height={48} aria-label="Nível do microfone" />
-            <span className="hud-timer" aria-label="Tempo de gravação">
-              {formatElapsed(elapsed)}
-            </span>
+            <button
+              type="button"
+              className="hud-btn hud-btn-cancel"
+              aria-label="Cancelar e descartar a gravação"
+              onClick={() => void invoke("hud_cancel")}
+            >
+              <svg
+                viewBox="0 0 24 24"
+                width="13"
+                height="13"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.6"
+                strokeLinecap="round"
+              >
+                <path d="M6 6l12 12" />
+                <path d="M18 6L6 18" />
+              </svg>
+            </button>
+            <canvas ref={canvasRef} className="hud-wave" width={120} height={32} aria-label="Nível do microfone" />
+            <button
+              type="button"
+              className="hud-btn hud-btn-accept"
+              aria-label="Encerrar e polir com IA"
+              onClick={() => void invoke("hud_accept")}
+            >
+              <svg
+                viewBox="0 0 24 24"
+                width="14"
+                height="14"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.8"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <path d="M4 12.5l5 5L20 6.5" />
+              </svg>
+            </button>
           </div>
         )}
         {state === "transcribing" && (
           <span className="hud-transcribing">
             <span className="hud-spinner" /> {message ?? "Transcrevendo…"}
+          </span>
+        )}
+        {state === "polishing" && (
+          <span className="hud-transcribing">
+            <span className="hud-spinner" /> {message ?? "Polindo…"}
           </span>
         )}
         {state === "done" && (
