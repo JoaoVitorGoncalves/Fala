@@ -1,14 +1,14 @@
 /* ============================================================
    Fala — HUD · Liquid Glass do macOS 26 (sempre escuro nos dois modos)
-   O material do sistema (liquidGlassRegular, radius 38 no conf) já vem
+   O material do sistema (liquidGlassClear, radius 30 no conf) já vem
    em forma de cápsula; o CSS só adiciona tint, aresta e reflexos.
    A cápsula cobre a janela INTEIRA — nenhum retângulo sobrando.
    ============================================================ */
 
 :root {
   --ease-out: cubic-bezier(0.32, 0.72, 0, 1);
-  --hud-slot-w: 252px;
-  --hud-slot-h: 52px;
+  --hud-slot-w: 196px;
+  --hud-slot-h: 40px;
 }
 
 /* The HUD webview is a transparent, fixed-size surface over native Liquid Glass. */
@@ -35,7 +35,7 @@ body,
   overflow: hidden;
   color: rgba(255, 255, 255, 0.92);
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 500;
   letter-spacing: 0.1px;
   user-select: none;
@@ -100,38 +100,47 @@ body,
   to   { opacity: 1; transform: translateY(0); }
 }
 
-/* --- gravando: pulso vermelho (systemRed) + waveform branca --- */
-.hud-dot {
-  flex: none;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: #ff453a;
-  animation: hud-pulse 1.15s ease-in-out infinite;
-}
-
-@keyframes hud-pulse {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(255, 69, 58, 0.45); }
-  50%      { box-shadow: 0 0 0 6px rgba(255, 69, 58, 0); }
-}
-
+/* --- gravando: ✕ descarta · waveform branca · ✓ encerra e polir --- */
 .hud-recording-content {
   display: flex;
   align-items: center;
   width: 100%;
-  gap: 10px;
+  gap: 8px;
 }
 
-.hud-wave { display: block; width: 188px; height: 48px; }
+.hud-wave { display: block; width: 110px; height: 32px; }
 
-.hud-timer {
-  flex: 0 0 32px;
-  color: rgba(255, 255, 255, 0.68);
-  font: 500 10px/1 ui-monospace, "SF Mono", SFMono-Regular, Menlo, monospace;
-  font-variant-numeric: tabular-nums;
-  letter-spacing: 0.2px;
-  text-align: right;
+/* Botões da cápsula: círculos pequenos, clicáveis sem roubar o foco do app
+   alvo (a janela é focusable=false — o clique é entregue sem ativar). */
+.hud-btn {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  cursor: pointer;
+  transition: background 0.15s var(--ease-out), transform 0.15s var(--ease-out);
 }
+
+.hud-btn:active { transform: scale(0.9); }
+
+.hud-btn-cancel {
+  background: rgba(255, 255, 255, 0.16);
+  color: rgba(255, 255, 255, 0.95);
+}
+
+.hud-btn-cancel:hover { background: rgba(255, 69, 58, 0.85); color: #fff; }
+
+.hud-btn-accept {
+  background: rgba(255, 255, 255, 0.92);
+  color: rgba(24, 24, 26, 0.92);
+}
+
+.hud-btn-accept:hover { background: #30d158; color: #fff; }
 
 /* The meter has a calm baseline while listening, never a dead/static gap. */
 .hud-recording .hud-wave { opacity: 0.98; }
@@ -176,6 +185,14 @@ body,
 
 @keyframes hud-spin { to { transform: rotate(360deg); } }
 
+/* --- polindo: brilho quente na aresta da cápsula (referência "Cleaning up") --- */
+.hud-polishing::before {
+  box-shadow:
+    0 0 16px rgba(255, 138, 76, 0.28),
+    0 0 3px rgba(255, 160, 90, 0.35),
+    inset 0 0.5px 0 rgba(255, 196, 140, 0.4);
+}
+
 /* --- done: check systemGreen com pop --- */
 .hud-done {
   display: inline-flex;
@@ -198,7 +215,7 @@ body,
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  max-width: 210px;
+  max-width: 150px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -244,5 +261,15 @@ html.win .hud::before {
   box-shadow:
     0 10px 32px rgba(0, 0, 0, 0.38),
     inset 0 0.5px 0 rgba(255, 255, 255, 0.22),
+    inset 0 -0.5px 0 rgba(0, 0, 0, 0.20);
+}
+
+/* Polindo no Windows: mesmo material escuro, mas com o arco quente na aresta. */
+html.win .hud-polishing::before {
+  border-color: rgba(255, 170, 100, 0.35);
+  box-shadow:
+    0 10px 32px rgba(0, 0, 0, 0.38),
+    0 0 18px rgba(255, 138, 76, 0.25),
+    inset 0 0.5px 0 rgba(255, 196, 140, 0.35),
     inset 0 -0.5px 0 rgba(0, 0, 0, 0.20);
 }

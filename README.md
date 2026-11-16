@@ -2,13 +2,13 @@
 
 Ditador local push-to-talk para macOS e Windows — estilo Wispr Flow, mas **100% local**: o áudio nunca sai da máquina.
 
-Segure o atalho global → fale → solte → o texto (transcrito pelo whisper.cpp com Metal/CPU) é colado no app em foco.
+Segure o atalho global → fale → solte → o resultado (transcrito pelo whisper.cpp com Metal/CPU) é guardado no Clipboard ou inserido no campo focado, conforme a configuração.
 
 ## Funcionalidades (v1)
 
 - Atalho global push-to-talk (configurável, padrão `alt+space`)
 - Whisper local (ggml), com aceleração Metal no macOS
-- Inserção por clipboard (com restauração) ou digitação sintética
+- Entrega por Clipboard persistente (para colagem manual) ou inserção direta por digitação sintética
 - **Transcrição em tempo real por commits**: cada pausa da fala fecha um trecho
   que é decodificado uma única vez (modelo rápido `small-q5_1`) e digitado como
   texto final — nada é apagado nem re-transcrito; ao soltar o atalho, só o
@@ -18,10 +18,11 @@ Segure o atalho global → fale → solte → o texto (transcrito pelo whisper.c
 - Configurações: atalho, idioma, microfone, modelo, limite de gravação, auto-start
 - Onboarding de permissões (Acessibilidade no macOS)
 
-## Fase 2 (roadmap)
+## Polimento IA
 
-- Polimento IA opcional (Ollama local ou API cloud): pontuação, listas, tons, dicionário pessoal
-- Snippets por atalho falado, auto-update, assinatura de código no Windows
+Quando ativado, o Fala aguarda a versão limpa antes de entregar o resultado ao Clipboard ou ao campo focado. Se a IA estiver indisponível, a transcrição original é usada como fallback; sem IA, a entrega direta continua imediata.
+
+Outras melhorias futuras incluem snippets por atalho falado, auto-update e assinatura de código no Windows.
 
 ## Desenvolvimento
 
@@ -67,4 +68,4 @@ src-tauri/src/
 - **Microfone**: prompt do TCC na primeira gravação
 - **Acessibilidade**: necessária para a colagem (Ajustes → Privacidade e Segurança → Acessibilidade)
 
-Privacidade: nenhuma rede é usada; todo o processamento é on-device.
+Privacidade: o áudio e a transcrição permanecem locais por padrão. O download opcional do modelo rápido e o polimento IA usam rede somente quando configurados pelo usuário.
