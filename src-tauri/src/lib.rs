@@ -1039,7 +1039,18 @@ fn stop_recording_and_transcribe(app: &AppHandle) {
                 );
                 schedule_hud_hide(&app, 3400, generation);
             } else {
-                hud_state(&app, "done", None);
+                // done contextual: o HUD mostra o destino real do resultado
+                let chars = payload
+                    .get("text")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.chars().count())
+                    .unwrap_or(0);
+                let done_msg = match config.delivery {
+                    DeliveryMode::Clipboard => "clipboard".to_string(),
+                    DeliveryMode::Meeting => "meeting".to_string(),
+                    DeliveryMode::Direct => format!("direct|{chars}"),
+                };
+                hud_state(&app, "done", Some(&done_msg));
                 schedule_hud_hide(&app, 1400, generation);
             }
         } else {
@@ -1163,8 +1174,8 @@ fn toggle_panel(app: &AppHandle) {
 
 // ---------------------------------------------------------------- HUD flutuante
 
-const HUD_W: f64 = 240.0;
-const HUD_H: f64 = 60.0; // cápsula fixa do HUD público (radius 30 no conf)
+const HUD_W: f64 = 252.0;
+const HUD_H: f64 = 46.0; // cápsula fixa do HUD público (radius 23 no conf)
 
 /// Mostra o HUD no centro-inferior da tela, SEM roubar o foco do app alvo
 /// (focusable=false → canBecomeKeyWindow=false → o paste continua indo certo).
