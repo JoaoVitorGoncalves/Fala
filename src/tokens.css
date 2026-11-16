@@ -1,0 +1,123 @@
+/* ============================================================
+   FALA · DESIGN v2 — tokens globais ("Estúdio de Voz Pessoal")
+   Identidade própria · técnico escuro · dark-only nos dois SOs.
+   Fonte de verdade: .zcode/design/fala-mockup.html
+   ============================================================ */
+
+/* ---------- fontes (OFL, subset latin) ---------- */
+@font-face {
+  font-family: "Geist Sans";
+  src: url("./assets/fonts/geist-sans-latin-400-normal.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Geist Sans";
+  src: url("./assets/fonts/geist-sans-latin-500-normal.woff2") format("woff2");
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Geist Sans";
+  src: url("./assets/fonts/geist-sans-latin-600-normal.woff2") format("woff2");
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("./assets/fonts/jetbrains-mono-latin-400-normal.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("./assets/fonts/jetbrains-mono-latin-500-normal.woff2") format("woff2");
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("./assets/fonts/jetbrains-mono-latin-600-normal.woff2") format("woff2");
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+
+:root {
+  /* superfícies (nunca #000) */
+  --bg0: #0b0b0e;
+  --bg1: #121217;
+  --bg2: #17171d;
+  --bg3: #1d1d24;
+  --hairline: #26262e;
+  --hairline-soft: #1f1f27;
+
+  /* texto */
+  --t1: #ececf1;
+  --t2: #9a9aa6;
+  --t3: #5f5f6b;
+
+  /* acento interativo único */
+  --accent: #5eb1ff;
+  --accent-soft: rgba(94, 177, 255, 0.14);
+  --accent-border: rgba(94, 177, 255, 0.5);
+
+  /* status (funcionais, não decorativos) */
+  --rec: #ff5c5c;
+  --busy: #ffb454;
+  --polish: #f27da8;
+  --ok: #3ddc97;
+  --err: #e5484d;
+
+  /* formas */
+  --r-card: 14px;
+  --r-field: 10px;
+  --r-pill: 999px;
+
+  /* tipografia */
+  --font: "Geist Sans", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  --mono: "JetBrains Mono", "Cascadia Mono", "Cascadia Code", ui-monospace, monospace;
+
+  /* curvas do motion engine */
+  --ease: cubic-bezier(0.16, 1, 0.3, 1);
+  --spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+/* ---------- motor de movimento: entrada em cascata ---------- */
+/* O observador (src/motion.ts) adiciona .in quando o elemento entra na tela. */
+.reveal { opacity: 0; transform: translateY(26px); }
+.reveal.in {
+  opacity: 1;
+  transform: none;
+  transition: opacity 0.7s var(--ease), transform 0.7s var(--ease);
+}
+
+.stag > * { opacity: 0; transform: translateY(16px); }
+.in .stag > *,
+.in.stag > * {
+  opacity: 1;
+  transform: none;
+  transition: opacity 0.55s var(--ease), transform 0.55s var(--ease);
+}
+.in .stag > *:nth-child(1), .in.stag > *:nth-child(1) { transition-delay: 0.03s; }
+.in .stag > *:nth-child(2), .in.stag > *:nth-child(2) { transition-delay: 0.09s; }
+.in .stag > *:nth-child(3), .in.stag > *:nth-child(3) { transition-delay: 0.15s; }
+.in .stag > *:nth-child(4), .in.stag > *:nth-child(4) { transition-delay: 0.21s; }
+.in .stag > *:nth-child(5), .in.stag > *:nth-child(5) { transition-delay: 0.27s; }
+.in .stag > *:nth-child(6), .in.stag > *:nth-child(6) { transition-delay: 0.33s; }
+.in .stag > *:nth-child(7), .in.stag > *:nth-child(7) { transition-delay: 0.39s; }
+.in .stag > *:nth-child(8), .in.stag > *:nth-child(8) { transition-delay: 0.45s; }
+.in .stag > *:nth-child(n + 9) { transition-delay: 0.5s; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+  .reveal, .stag > * { opacity: 1 !important; transform: none !important; }
+}

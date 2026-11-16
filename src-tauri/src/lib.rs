@@ -2,6 +2,7 @@
 // Segure o atalho global → grava; solte → transcreve com whisper.cpp local → cola no app focado.
 
 mod audio;
+mod dataset;
 mod inject;
 mod live;
 mod llm;
@@ -36,13 +37,79 @@ impl Status {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DeliveryMode {
+    Clipboard,
+    Direct,
+    Meeting,
+}
+
+impl DeliveryMode {
+    pub(crate) fn from_settings(paste_mode: &str, meeting_mode: bool) -> Self {
+        if meeting_mode {
+            Self::Meeting
+        } else if paste_mode == "type" {
+            Self::Direct
+        } else {
+            Self::Clipboard
+        }
+    }
+
+    /// O live só pode entregar imediatamente quando o destino é direto e a
+    /// IA está desligada. Clipboard e IA aguardam o resultado final completo.
+    pub(crate) fn defers_live(self, ai_enabled: bool) -> bool {
+        matches!(self, Self::Clipboard | Self::Meeting) || ai_enabled
+    }
+}
+
+#[derive(Debug, Clone)]
+struct SessionConfig {
+    model_path: String,
+    language: String,
+    paste_mode: String,
+    vocab_prompt: Option<String>,
+    corrections: Option<String>,
+    ai: Option<settings::AiSettings>,
+    meeting_mode: bool,
+    save_dataset: bool,
+    delivery: DeliveryMode,
+}
+
+impl SessionConfig {
+    fn from_settings(settings: &settings::Settings) -> Result<Self, String> {
+        let model_path = settings
+            .model_path
+            .clone()
+            .ok_or_else(|| "configure o modelo nas configurações".to_string())?;
+        Ok(Self {
+            model_path,
+            language: settings.language.clone(),
+            paste_mode: settings.paste_mode.clone(),
+            vocab_prompt: settings.vocab_prompt.clone(),
+            corrections: settings.corrections.clone(),
+            ai: settings.ai.clone(),
+            meeting_mode: settings.meeting_mode,
+            save_dataset: settings.save_dataset,
+            delivery: DeliveryMode::from_settings(&settings.paste_mode, settings.meeting_mode),
+        })
+    }
+
+    fn ai_enabled(&self) -> bool {
+        self.ai.as_ref().is_some_and(|ai| ai.enabled)
+    }
+
+    fn defers_live(&self) -> bool {
+        self.delivery.defers_live(self.ai_enabled())
+    }
+}
+
 struct Recording {
     recorder: audio::Recorder,
     started: Instant,
     hud_generation: u64,
     /// configuração congelada no início: salvar settings durante a sessão
     /// nunca muda o destino dos trechos já capturados
-    meeting_mode: bool,
+    config: SessionConfig,
     /// worker de transcrição em tempo real (None se desativado/sem modelo)
     live: Option<std::thread::JoinHandle<live::LiveResult>>,
 }
@@ -67,7 +134,7 @@ struct AppState {
     /// painel "versão limpa": segmentos acumulados (cru até chegar o limpo)
     panel: Mutex<Vec<PanelSegment>>,
     panel_generation: AtomicU64,
-    /// chars colados por trecho, na ordem — base dos comandos "apagar"
+    /// chars inseridos por trecho no modo direto — base dos comandos "apagar"
     injected: Mutex<Vec<usize>>,
     /// prefixo de comando que atravessou a fronteira entre dois chunks
     command_buffer: Mutex<String>,
@@ -152,7 +219,7 @@ fn polish_checked(ai: &settings::AiSettings, text: &str) -> Option<String> {
     }
 }
 
-/// Segmento pendente de polimento (ao vivo: um trecho commitado; final: a cauda).
+/// Segmento pendente de polimento (modo reunião/painel ou entrega final).
 #[derive(Debug, Clone)]
 pub(crate) struct PendingPolish {
     pub(crate) id: u64,
@@ -206,6 +273,104 @@ pub(crate) fn enqueue_polish(app: &AppHandle, text: String) {
 fn emit_panel(app: &AppHandle) {
     let segments = app.state::<AppState>().panel.lock().unwrap().clone();
     let _ = app.emit("panel-state", serde_json::json!({ "segments": segments }));
+}
+
+/// Registra uma entrega final no painel sem criar uma segunda requisição de IA.
+fn enqueue_resolved_panel(app: &AppHandle, raw: String, clean: Option<String>) {
+    if raw.trim().is_empty() {
+        return;
+    }
+    let state = app.state::<AppState>();
+    let id = state.polish_next_id.fetch_add(1, Ordering::Relaxed);
+    state.panel.lock().unwrap().push(PanelSegment {
+        id,
+        raw,
+        clean,
+    });
+    emit_panel(app);
+}
+
+/// Emite um único sinal após o resultado realmente chegar ao destino escolhido.
+fn emit_delivery_complete(app: &AppHandle) {
+    diag("delivery-complete emitido (entrega concluída; som de conclusão)");
+    let _ = app.emit("delivery-complete", serde_json::json!({}));
+}
+
+fn state_hud_current(app: &AppHandle, generation: u64) -> bool {
+    let state = app.state::<AppState>();
+    state.hud_generation.load(Ordering::Acquire) == generation
+        && state.status() == Status::Transcribing
+}
+
+fn deliver_final_text(
+    app: &AppHandle,
+    delivery: DeliveryMode,
+    text: &str,
+) -> Result<(), String> {
+    match delivery {
+        DeliveryMode::Clipboard => inject::copy_to_clipboard_on_main(app, text),
+        DeliveryMode::Direct => inject::paste_text(app, text, "type"),
+        DeliveryMode::Meeting => Ok(()),
+    }
+}
+
+fn delivery_is_external(delivery: DeliveryMode) -> bool {
+    matches!(delivery, DeliveryMode::Clipboard | DeliveryMode::Direct)
+}
+
+fn append_session_text(base: &str, addition: &str) -> String {
+    // Preserva quebras de parágrafo: espaços nas bordas são removidos, mas
+    // novas linhas dos dois lados são mantidas (comando "novo parágrafo").
+    let base = trim_edges(base);
+    let addition = trim_edges(addition);
+    if base.is_empty() {
+        addition.to_string()
+    } else if addition.is_empty() {
+        base.to_string()
+    } else if base.ends_with(['\n', '\r']) || addition.starts_with(['\n', '\r']) {
+        format!("{base}{addition}")
+    } else {
+        format!("{base} {addition}")
+    }
+}
+
+/// Apara espaços das bordas mantendo quebras de linha.
+fn trim_edges(s: &str) -> &str {
+    s.trim_matches(|c: char| c.is_whitespace() && c != '\n' && c != '\r')
+}
+
+/// Aplica comandos de voz ao texto ainda mantido em memória. Esse caminho é
+/// usado quando a sessão não pode tocar no app focado (Clipboard, IA ou reunião).
+pub(crate) fn apply_buffer_command(
+    text: &mut String,
+    command: VoiceCommand,
+) -> Result<&'static str, String> {
+    match command {
+        VoiceCommand::NewParagraph => {
+            if !text.is_empty() && !text.ends_with('\n') {
+                text.push_str("\n\n");
+            }
+            Ok("Parágrafo novo ✓")
+        }
+        VoiceCommand::DeleteAll => {
+            text.clear();
+            Ok("Texto apagado ✓")
+        }
+        VoiceCommand::DeleteLast => {
+            let trimmed = text.trim_end().to_string();
+            if trimmed.is_empty() {
+                return Err("nada para apagar".into());
+            }
+            let end = trimmed
+                .char_indices()
+                .rev()
+                .find_map(|(idx, ch)| ch.is_whitespace().then_some(idx))
+                .unwrap_or(0);
+            text.truncate(end);
+            Ok("Trecho apagado ✓")
+        }
+        VoiceCommand::CopyClean => Ok("Versão limpa será entregue ao final ✓"),
+    }
 }
 
 /// Aplica o texto limpo ao painel, colapsando o bloco de segmentos [first..=last]
@@ -332,18 +497,11 @@ fn begin_recording(app: &AppHandle, settings: &settings::Settings) -> Result<(),
     state.injected.lock().unwrap().clear();
     state.command_buffer.lock().unwrap().clear();
 
-    match &settings.model_path {
-        Some(p) if std::path::Path::new(p).exists() => {}
-        Some(p) => {
-            eprintln!("[fala] modelo não encontrado: {p}");
-            show_settings_window(app);
-            return Err("modelo não encontrado; abra as configurações".into());
-        }
-        None => {
-            eprintln!("[fala] modelo não configurado");
-            show_settings_window(app);
-            return Err("configure o modelo nas configurações".into());
-        }
+    let config = SessionConfig::from_settings(settings)?;
+    if !std::path::Path::new(&config.model_path).exists() {
+        eprintln!("[fala] modelo não encontrado: {}", config.model_path);
+        show_settings_window(app);
+        return Err("modelo não encontrado; abra as configurações".into());
     }
 
     let vad = Arc::new(audio::VadState::new());
@@ -356,24 +514,22 @@ fn begin_recording(app: &AppHandle, settings: &settings::Settings) -> Result<(),
             .unwrap_or("entrada padrão do sistema")
     ));
     // transcrição em tempo real: worker próprio confirmando trechos a cada
-    // pausa. No macOS (Metal) os trechos usam o modelo grande — latência de
-    // small-na-CPU com precisão do large; em CPU pura (Windows), o modelo
-    // rápido dedicado. Sem modelo/sem live: gravação segue como antes.
-    // O modelo rápido configurado/baixado é válido nos dois SOs. Só cai no
-    // modelo principal se o small ainda não existir, para não deixar o live
-    // silenciosamente sem worker.
+    // pausa. O worker recebe o destino congelado desta sessão: Clipboard e IA
+    // acumulam texto sem tocar no app focado; Digitar sem IA mantém commits.
     let live_model =
-        settings::live_model_path_or_default(settings).or_else(|| settings.model_path.clone());
+        settings::live_model_path_or_default(settings).or_else(|| Some(config.model_path.clone()));
     let live = match live_model {
         Some(path) if settings.live_transcribe => Some(live::spawn(
             app.clone(),
             recorder.handle(),
             path,
-            settings.language.clone(),
-            settings.vocab_prompt.clone(),
-            settings.corrections.clone(),
+            config.language.clone(),
+            config.vocab_prompt.clone(),
+            config.corrections.clone(),
             generation,
-            settings.meeting_mode,
+            config.meeting_mode,
+            config.delivery,
+            config.ai_enabled(),
         )),
         _ => None,
     };
@@ -381,11 +537,11 @@ fn begin_recording(app: &AppHandle, settings: &settings::Settings) -> Result<(),
         recorder,
         started: Instant::now(),
         hud_generation: generation,
-        meeting_mode: settings.meeting_mode,
+        config: config.clone(),
         live,
     });
     state.set_status(Status::Recording);
-    if settings.meeting_mode {
+    if config.meeting_mode {
         update_tray(
             app,
             Status::Recording,
@@ -396,7 +552,7 @@ fn begin_recording(app: &AppHandle, settings: &settings::Settings) -> Result<(),
     }
     hud_state(app, "recording", None);
     show_hud(app);
-    if settings.meeting_mode {
+    if config.meeting_mode {
         hud_chip(app, "Reunião: capturando sem colar");
     }
 
@@ -532,7 +688,8 @@ fn stop_recording_and_transcribe(app: &AppHandle) {
         return; // não estava gravando
     };
     let generation = recording.hud_generation;
-    let meeting_mode = recording.meeting_mode;
+    let config = recording.config.clone();
+    let meeting_mode = config.meeting_mode;
     let live_handle = recording.live;
     let had_live_worker = live_handle.is_some();
     state.active_transcriptions.fetch_add(1, Ordering::AcqRel);
@@ -587,22 +744,17 @@ fn stop_recording_and_transcribe(app: &AppHandle) {
         if mic_stalled { " → MIC TRAVOU" } else { "" }
     ));
 
-    let settings = state.settings.lock().unwrap().clone();
-    let model_path = settings.model_path.unwrap_or_default();
-    let language = settings.language.clone();
-    let paste_mode = settings.paste_mode.clone();
-    let vocab_prompt = settings
+    // Usa a configuração congelada quando a gravação começou. Salvar durante
+    // uma sessão não pode mudar seu destino nem o modelo usado na cauda.
+    let model_path = config.model_path.clone();
+    let language = config.language.clone();
+    let paste_mode = config.paste_mode.clone();
+    let vocab_prompt = config
         .vocab_prompt
         .clone()
         .filter(|p| !p.trim().is_empty());
-    let corrections = settings.corrections.clone();
-    let ai = settings.ai.clone();
-    // comportamento clássico opt-in: esperar o polimento IA antes de colar
-    let polish_before_paste = ai
-        .as_ref()
-        .is_some_and(|a| a.enabled && a.polish_before_paste);
-    // Usa a configuração congelada quando a gravação começou. Não reler o
-    // settings aqui: salvar durante uma sessão não pode mudar seu destino.
+    let corrections = config.corrections.clone();
+    let ai = config.ai.clone();
     let app = app.clone(); // handle próprio para a thread de transcrição
     std::thread::spawn(move || {
         // Aguarda o worker ao vivo. O áudio parado completo é a fonte de
@@ -616,6 +768,7 @@ fn stop_recording_and_transcribe(app: &AppHandle) {
                     live::LiveResult {
                         committed_text: String::new(),
                         committed_samples: 0,
+                        activity: false,
                     }
                 }
             },
@@ -624,6 +777,7 @@ fn stop_recording_and_transcribe(app: &AppHandle) {
                 live::LiveResult {
                     committed_text: String::new(),
                     committed_samples: 0,
+                    activity: false,
                 }
             }
         };
@@ -637,6 +791,7 @@ fn stop_recording_and_transcribe(app: &AppHandle) {
             0
         };
         let tail = samples[committed_samples..].to_vec();
+        let deferred_delivery = config.defers_live();
         diag(&format!(
             "reconciliação: meeting={meeting_mode}, live_worker={had_live_worker}, committed_samples={committed_samples}, tail_samples={}",
             tail.len()
@@ -648,16 +803,13 @@ fn stop_recording_and_transcribe(app: &AppHandle) {
         // clássico. Correções do usuário e o polimento IA se aplicam ao resultado.
         let result = if tail.is_empty() {
             let pending = take_command_buffer(&app);
-            if !pending.is_empty() {
-                diag(&format!("comando pendente liberado como texto: {pending}"));
-                Ok(if live.committed_text.is_empty() {
-                    pending
-                } else {
-                    format!("{} {pending}", live.committed_text.trim())
-                })
+            let text = if pending.is_empty() {
+                live.committed_text.clone()
             } else {
-                Ok(live.committed_text.clone())
-            }
+                diag(&format!("comando pendente liberado como texto: {pending}"));
+                append_session_text(&live.committed_text, &pending)
+            };
+            Ok(text)
         } else {
             app.state::<AppState>()
                 .transcriber
@@ -665,12 +817,23 @@ fn stop_recording_and_transcribe(app: &AppHandle) {
                 .map(|text| apply_corrections(text, &corrections))
                 .map(|text| merge_command_buffer(&app, text))
         };
+        // Quando só houve commits live, a cauda é vazia, mas ainda existe uma
+        // entrega final pendente em Clipboard/IA (ou uma entrega de reunião).
+        let result = result.map(|text| {
+            if text.trim().is_empty() && live.activity {
+                live.committed_text.clone()
+            } else {
+                text
+            }
+        });
         let payload = match result {
-            Ok(text) if text.is_empty() => {
-                if !live.committed_text.is_empty() {
-                    // a cauda era silêncio (ou nada reconhecido), mas os trechos
-                    // confirmados já estão no input — ditado bem-sucedido
-                    diag("cauda vazia/sem fala; mantendo trechos confirmados do live");
+            Ok(text) if text.trim().is_empty() => {
+                if live.activity && meeting_mode {
+                    app.state::<AppState>()
+                        .no_speech_retries
+                        .store(0, std::sync::atomic::Ordering::Relaxed);
+                    serde_json::json!({ "ok": true, "text": live.committed_text, "meeting": true })
+                } else if live.activity {
                     app.state::<AppState>()
                         .no_speech_retries
                         .store(0, std::sync::atomic::Ordering::Relaxed);
@@ -680,7 +843,7 @@ fn stop_recording_and_transcribe(app: &AppHandle) {
                     serde_json::json!({ "ok": false, "error": "Nada reconhecido — fale mais perto do microfone." })
                 }
             }
-            Ok(text) => {
+            Ok(mut text) => {
                 diag(&format!(
                     "revisão da cauda em {:.2}s: {text}",
                     started.elapsed().as_secs_f32()
@@ -688,88 +851,170 @@ fn stop_recording_and_transcribe(app: &AppHandle) {
                 app.state::<AppState>()
                     .no_speech_retries
                     .store(0, std::sync::atomic::Ordering::Relaxed);
-                if let Some(cmd) = detect_command(&text) {
-                    // comando dito na cauda (ou sem live): vira ação, não texto
-                    match execute_command(&app, cmd) {
-                        Ok(feedback) => {
-                            hud_chip(&app, feedback);
-                            serde_json::json!({ "ok": true, "text": format!("[{feedback}]") })
+
+                let tail_command = if !tail.is_empty() {
+                    detect_command(&text)
+                } else {
+                    None
+                };
+                // Apenas os modos adiados acumulam live + cauda. No modo
+                // direto sem IA, os commits já estão no campo focado e só a
+                // cauda ainda precisa ser entregue.
+                if deferred_delivery && !tail.is_empty() {
+                    text = append_session_text(&live.committed_text, &text);
+                }
+                let command_feedback = tail_command.map(|cmd| {
+                    if deferred_delivery {
+                        let mut buffered = live.committed_text.clone();
+                        let feedback = apply_buffer_command(&mut buffered, cmd);
+                        if feedback.is_ok() {
+                            text = if matches!(cmd, VoiceCommand::CopyClean) {
+                                String::new()
+                            } else {
+                                buffered
+                            };
+                        } else {
+                            text = live.committed_text.clone();
                         }
-                        Err(e) => {
-                            hud_chip(&app, &format!("Comando falhou: {e}"));
-                            serde_json::json!({ "ok": true, "text": text })
+                        feedback
+                    } else {
+                        execute_command(&app, cmd)
+                    }
+                });
+                let command_only = tail_command.is_some()
+                    && command_feedback.as_ref().is_some_and(|feedback| feedback.is_ok())
+                    && text.trim().is_empty();
+                if let Some(feedback) = command_feedback.as_ref() {
+                    match feedback {
+                        Ok(message) => hud_chip(&app, message),
+                        Err(error) => hud_chip(&app, &format!("Comando falhou: {error}")),
+                    }
+                }
+                // Coleta assíncrona para dataset de fine-tuning (opt-in, congelado
+                // por sessão). Sessões só-comando não geram amostra; o texto é o
+                // ditado completo da sessão (live + cauda já mesclados nos modos
+                // adiados).
+                if !command_only && config.save_dataset && had_speech && !mic_stalled {
+                    let ds_full = if deferred_delivery || live.committed_text.is_empty() {
+                        text.clone()
+                    } else {
+                        append_session_text(&live.committed_text, &text)
+                    };
+                    if !ds_full.trim().is_empty() {
+                        let ds_samples = samples.clone();
+                        std::thread::spawn(move || {
+                            let _ = dataset::save_sample(&ds_samples, &ds_full, None);
+                        });
+                    }
+                }
+                if command_only {
+                    let message = command_feedback
+                        .and_then(|feedback| feedback.ok())
+                        .unwrap_or("comando");
+                    serde_json::json!({ "ok": true, "text": format!("[{message}]"), "command": true })
+                } else if !deferred_delivery {
+                    if let Some(feedback) = command_feedback {
+                        match feedback {
+                            Ok(message) => serde_json::json!({ "ok": true, "text": format!("[{message}]") }),
+                            Err(_) => serde_json::json!({ "ok": true, "text": text }),
+                        }
+                    } else if tail.is_empty() && !live.committed_text.is_empty() {
+                        // Todos os trechos já foram digitados durante a fala; o
+                        // sinal final ainda confirma a conclusão da sessão.
+                        emit_delivery_complete(&app);
+                        serde_json::json!({ "ok": true, "text": live.committed_text })
+                    } else if text.trim().is_empty() {
+                        serde_json::json!({ "ok": true, "text": text })
+                    } else {
+                        // Direct sem IA: somente a cauda ainda não digitada chega ao campo.
+                        // Os commits live já terminaram sem separador final.
+                        let direct_text = if live.committed_text.is_empty() {
+                            text
+                        } else {
+                            format!(" {}", text.trim())
+                        };
+                        match inject::paste_text(&app, &direct_text, &paste_mode) {
+                            Ok(()) => {
+                                app.state::<AppState>()
+                                    .injected
+                                    .lock()
+                                    .unwrap()
+                                    .push(direct_text.chars().count());
+                                emit_delivery_complete(&app);
+                                serde_json::json!({ "ok": true, "text": direct_text })
+                            }
+                            Err(e) => {
+                                diag(&format!("falha ao inserir a cauda: {e}"));
+                                serde_json::json!({ "ok": false, "error": format!("Falha ao inserir: {e}"), "text": direct_text })
+                            }
                         }
                     }
-                } else if tail.is_empty() && text == live.committed_text {
-                    // tudo já foi digitado pelos commits ao vivo
-                    serde_json::json!({ "ok": true, "text": text })
                 } else if meeting_mode {
-                    // modo reunião: nada é colado — a cauda vai só para o painel
-                    enqueue_polish(&app, text.clone());
-                    let full = if live.committed_text.is_empty() {
-                        text
-                    } else {
-                        format!("{} {text}", live.committed_text.trim())
-                    };
-                    serde_json::json!({ "ok": true, "text": full, "meeting": true })
+                    if !text.trim().is_empty() {
+                        enqueue_polish(&app, text.clone());
+                    }
+                    serde_json::json!({ "ok": true, "text": text, "meeting": true })
                 } else {
-                    // Comportamento clássico opt-in: esperar a IA e colar polido.
-                    // Padrão: cola rápido (correções locais) e o polimento segue
-                    // async para o painel/evento clean-version.
-                    let text = if polish_before_paste {
-                        let st = app.state::<AppState>();
-                        if st.hud_generation.load(Ordering::Relaxed) == generation
-                            && st.status() == Status::Transcribing
-                        {
-                            hud_state(&app, "transcribing", Some("Polindo com IA…"));
+                    if let Some(ai_settings) = ai.as_ref().filter(|a| a.enabled) {
+                        if state_hud_current(&app, generation) {
+                            hud_state(&app, "polishing", Some("Polindo…"));
                         }
-                        ai.as_ref()
-                            .and_then(|a| polish_checked(a, &text))
-                            .unwrap_or(text)
-                    } else {
-                        text
-                    };
-                    // insere a cauda revisada — nada existente é apagado
-                    let sep = if live.committed_text.is_empty() {
-                        ""
-                    } else {
-                        " "
-                    };
-                    let injected = format!("{sep}{text}");
-                    match inject::paste_text(&app, &injected, &paste_mode) {
+                        let raw = text.clone();
+                        let clean = polish_checked(ai_settings, &raw);
+                        text = clean.clone().unwrap_or(raw.clone());
+                        enqueue_resolved_panel(&app, raw, clean);
+                    }
+                    let delivery = deliver_final_text(&app, config.delivery, &text);
+                    match delivery {
                         Ok(()) => {
-                            if !polish_before_paste {
-                                // versão limpa async: a cauda cru vai para o worker
-                                enqueue_polish(&app, text.clone());
+                            if delivery_is_external(config.delivery) {
+                                emit_delivery_complete(&app);
                             }
-                            // rastreia chars colados (base dos comandos "apagar")
-                            app.state::<AppState>()
-                                .injected
-                                .lock()
-                                .unwrap()
-                                .push(injected.chars().count());
                             serde_json::json!({ "ok": true, "text": text })
                         }
                         Err(e) => {
-                            diag(&format!("falha ao inserir a cauda: {e}"));
-                            serde_json::json!({ "ok": false, "error": format!("Falha ao inserir: {e}"), "text": text })
+                            diag(&format!("falha ao entregar a transcrição: {e}"));
+                            serde_json::json!({ "ok": false, "error": format!("Falha ao entregar: {e}"), "text": text })
                         }
                     }
                 }
             }
             Err(e) => {
-                if !live.committed_text.is_empty() {
-                    // a revisão da cauda falhou, mas os trechos confirmados já
-                    // estão no input — nada se perde
+                if deferred_delivery && !live.committed_text.is_empty() {
+                    // Clipboard/IA ainda não entregaram nada: uma falha na
+                    // cauda não pode descartar os commits acumulados.
+                    diag(&format!(
+                        "erro na revisão da cauda ({e}); entregando texto live acumulado"
+                    ));
+                    let text = live.committed_text.clone();
+                    let delivery = deliver_final_text(&app, config.delivery, &text);
+                    match delivery {
+                        Ok(()) => {
+                            if delivery_is_external(config.delivery) {
+                                emit_delivery_complete(&app);
+                            }
+                            serde_json::json!({ "ok": true, "text": text })
+                        }
+                        Err(delivery_err) => serde_json::json!({
+                            "ok": false,
+                            "error": format!("Falha ao entregar: {delivery_err}"),
+                            "text": text
+                        }),
+                    }
+                } else if !live.committed_text.is_empty() {
+                    // a cauda da revisão falhou, mas os trechos confirmados já
+                    // foram digitados no modo direto — nada se perde
                     diag(&format!(
                         "erro na revisão da cauda ({e}); mantendo trechos confirmados"
                     ));
+                    emit_delivery_complete(&app);
                     serde_json::json!({ "ok": true, "text": live.committed_text })
                 } else {
                     diag(&format!("erro na transcrição: {e}"));
                     serde_json::json!({ "ok": false, "error": e })
                 }
             }
+
         };
 
         let state = app.state::<AppState>();
@@ -794,7 +1039,18 @@ fn stop_recording_and_transcribe(app: &AppHandle) {
                 );
                 schedule_hud_hide(&app, 3400, generation);
             } else {
-                hud_state(&app, "done", None);
+                // done contextual: o HUD mostra o destino real do resultado
+                let chars = payload
+                    .get("text")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.chars().count())
+                    .unwrap_or(0);
+                let done_msg = match config.delivery {
+                    DeliveryMode::Clipboard => "clipboard".to_string(),
+                    DeliveryMode::Meeting => "meeting".to_string(),
+                    DeliveryMode::Direct => format!("direct|{chars}"),
+                };
+                hud_state(&app, "done", Some(&done_msg));
                 schedule_hud_hide(&app, 1400, generation);
             }
         } else {
@@ -849,6 +1105,21 @@ pub(crate) fn diag(msg: &str) {
 const NO_SPEECH_TIMEOUT_SECS: u64 = 7;
 const NO_SPEECH_TIMEOUT: Duration = Duration::from_secs(NO_SPEECH_TIMEOUT_SECS);
 
+/// Ícones da tray por estado (dot de status colorido — design v2).
+const TRAY_IDLE: &[u8] = include_bytes!("../icons/tray/tray-idle.png");
+const TRAY_REC: &[u8] = include_bytes!("../icons/tray/tray-rec.png");
+const TRAY_BUSY: &[u8] = include_bytes!("../icons/tray/tray-busy.png");
+
+fn tray_icon_for(status: Status) -> tauri::image::Image<'static> {
+    let bytes: &[u8] = match status {
+        Status::Idle => TRAY_IDLE,
+        Status::Recording => TRAY_REC,
+        Status::Transcribing => TRAY_BUSY,
+    };
+    tauri::image::Image::from_bytes(bytes)
+        .expect("PNG da tray embutido e válido")
+}
+
 fn update_tray(app: &AppHandle, status: Status, tooltip_override: Option<&str>) {
     // NSStatusItem (tray) exige a main thread no macOS; esta função também é
     // chamada de threads de gravação/transcrição, então marshal para a principal.
@@ -860,15 +1131,13 @@ fn update_tray(app: &AppHandle, status: Status, tooltip_override: Option<&str>) 
             Status::Recording => "Fala — gravando…".into(),
             Status::Transcribing => "Fala — transcrevendo…".into(),
         });
+    let icon = tray_icon_for(status);
     let _ = app.run_on_main_thread(move || {
         let Some(tray) = tray_app.tray_by_id(TRAY_ID) else {
             return;
         };
-        let _ = tray.set_title(match status {
-            Status::Idle => None,
-            Status::Recording => Some("● rec"),
-            Status::Transcribing => Some("… txt"),
-        });
+        // O dot colorido no ícone substitui o título textual "● rec"/"… txt".
+        let _ = tray.set_icon(Some(icon));
         let _ = tray.set_tooltip(Some(&tooltip));
     });
 }
@@ -918,8 +1187,8 @@ fn toggle_panel(app: &AppHandle) {
 
 // ---------------------------------------------------------------- HUD flutuante
 
-const HUD_W: f64 = 320.0;
-const HUD_H: f64 = 84.0; // cápsula fixa do HUD público (radius 42 no conf)
+const HUD_W: f64 = 252.0;
+const HUD_H: f64 = 46.0; // cápsula fixa do HUD público (radius 23 no conf)
 
 /// Mostra o HUD no centro-inferior da tela, SEM roubar o foco do app alvo
 /// (focusable=false → canBecomeKeyWindow=false → o paste continua indo certo).
@@ -1062,6 +1331,8 @@ struct SettingsInfo {
     live_model_available: bool,
     /// caminho resolvido do modelo rápido ("" se ausente)
     live_model_path: String,
+    /// estatísticas do dataset de fine-tuning
+    dataset_stats: dataset::DatasetStats,
 }
 
 /// Espera curta pelo estado (até ~2s): com a WebView2 quente a UI pode invocar
@@ -1090,6 +1361,7 @@ fn get_settings(app: AppHandle) -> Result<SettingsInfo, String> {
         accessibility: inject::accessibility_status(),
         live_model_available: live_path.is_some(),
         live_model_path: live_path.unwrap_or_default(),
+        dataset_stats: dataset::get_stats(),
         settings,
     })
 }
@@ -1153,6 +1425,38 @@ fn audio_conflict(app: AppHandle) -> Result<Option<serde_json::Value>, String> {
         .map(|c| serde_json::json!({ "input": c.input_name, "suggestion": c.suggestion })))
 }
 
+// ---------------------------------------------------------------- comandos do HUD (botões da cápsula)
+
+/// Botão ✕ do HUD: encerra a gravação DESCARTANDO o áudio — nada é
+/// transcrito nem colado. A corrida com o auto-stop/Esc/atalho é resolvida
+/// pelo take(): quem tomar o mutex primeiro decide o destino da sessão.
+#[tauri::command]
+fn hud_cancel(app: AppHandle) {
+    let state = app.state::<AppState>();
+    if state.status() != Status::Recording {
+        return;
+    }
+    let Some(recording) = state.recording.lock().unwrap().take() else {
+        return; // o encerramento automático chegou primeiro
+    };
+    let _ = recording.recorder.stop(); // amostras vão fora
+    // Sessão morta: impede que o worker live órfão digite e invalida timers
+    // de hide/estado desta gravação (mesmo mecanismo de begin_recording).
+    state.hud_generation.fetch_add(1, Ordering::AcqRel);
+    state.no_speech_retries.store(0, Ordering::Relaxed);
+    state.set_status(Status::Idle);
+    update_tray(&app, Status::Idle, None);
+    hud_state(&app, "idle", None);
+    hide_hud(&app);
+}
+
+/// Botão ✓ do HUD: mesmo destino do fim automático (silêncio/Esc/atalho) —
+/// encerra, transcreve e segue o fluxo de polimento configurado.
+#[tauri::command]
+fn hud_accept(app: AppHandle) {
+    stop_recording_and_transcribe(&app);
+}
+
 // ---------------------------------------------------------------- painel (versão limpa)
 
 #[tauri::command]
@@ -1186,6 +1490,20 @@ fn panel_clear(app: AppHandle) -> Result<(), String> {
     state.panel.lock().unwrap().clear();
     emit_panel(&app);
     Ok(())
+}
+
+#[tauri::command]
+fn dataset_stats() -> dataset::DatasetStats {
+    dataset::get_stats()
+}
+
+#[tauri::command]
+fn open_dataset_folder(app: AppHandle) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    let dir = dataset::ensure_dataset_dir()?;
+    app.opener()
+        .open_path(dir.to_string_lossy().as_ref(), None::<&str>)
+        .map_err(|e| e.to_string())
 }
 
 // ---------------------------------------------------------------- comandos de voz
@@ -1308,8 +1626,9 @@ pub(crate) fn hud_chip(app: &AppHandle, message: &str) {
     let _ = app.emit("hud-chip", serde_json::json!({ "message": message }));
 }
 
-/// Executa um comando de voz. O texto colado pelo Fala é rastreado em
-/// `AppState.injected` (chars por trecho) — é isso que os backspaces apagam.
+/// Executa um comando de voz no app focado. O texto inserido pelo Fala é
+/// rastreado em `AppState.injected` (chars por trecho) — é isso que os
+/// backspaces apagam. Sessões adiadas usam `apply_buffer_command`.
 pub(crate) fn execute_command(app: &AppHandle, cmd: VoiceCommand) -> Result<&'static str, String> {
     let state = app.state::<AppState>();
     match cmd {
@@ -1567,8 +1886,8 @@ fn profile_changed(a: &settings::Settings, b: &settings::Settings) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        CommandDecision, VoiceCommand, command_decision_with_buffer, detect_command,
-        normalize_command,
+        CommandDecision, DeliveryMode, VoiceCommand, append_session_text,
+        command_decision_with_buffer, detect_command, normalize_command,
     };
 
     #[test]
@@ -1621,10 +1940,68 @@ mod tests {
             CommandDecision::Text("apagar a reunião".into())
         );
     }
+
+    #[test]
+    fn buffered_commands_do_not_require_a_focused_input() {
+        let mut text = "primeiro trecho".to_string();
+        assert_eq!(
+            super::apply_buffer_command(&mut text, VoiceCommand::NewParagraph),
+            Ok("Parágrafo novo ✓")
+        );
+        assert!(text.ends_with("\n\n"));
+        assert_eq!(
+            super::apply_buffer_command(&mut text, VoiceCommand::DeleteAll),
+            Ok("Texto apagado ✓")
+        );
+        assert!(text.is_empty());
+    }
+
+    #[test]
+    fn delivery_mode_maps_clipboard_and_direct_targets() {
+        assert_eq!(
+            DeliveryMode::from_settings("clipboard", false),
+            DeliveryMode::Clipboard
+        );
+        assert_eq!(
+            DeliveryMode::from_settings("type", false),
+            DeliveryMode::Direct
+        );
+        assert_eq!(
+            DeliveryMode::from_settings("clipboard", true),
+            DeliveryMode::Meeting
+        );
+        assert!(DeliveryMode::Clipboard.defers_live(false));
+        assert!(DeliveryMode::Direct.defers_live(true));
+        assert!(!DeliveryMode::Direct.defers_live(false));
+    }
+
+    #[test]
+    fn deferred_text_merges_live_and_tail_once() {
+        assert_eq!(
+            append_session_text("primeiro trecho", "cauda final"),
+            "primeiro trecho cauda final"
+        );
+        assert_eq!(
+            append_session_text("primeiro trecho", "\n\ncauda final"),
+            "primeiro trecho\n\ncauda final"
+        );
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // O HUD é não-focável e pode nunca receber um gesto do usuário; sem esta
+    // variável o WebView2 bloqueia o som de conclusão por política de autoplay.
+    // Ela é ANEXADA aos argumentos padrão do loader (não os substitui) — por
+    // isso é aplicada via ambiente e não por additionalBrowserArgs na janela.
+    #[cfg(target_os = "windows")]
+    unsafe {
+        std::env::set_var(
+            "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
+            "--autoplay-policy=no-user-gesture-required",
+        );
+    }
+
     // panics vão para stderr E para ~/.fala/panic.log (apps LaunchServices não
     // entregam stderr ao log unificado de forma confiável)
     std::panic::set_hook(Box::new(|info| {
@@ -1678,6 +2055,10 @@ pub fn run() {
             panel_state,
             panel_copy,
             panel_clear,
+            dataset_stats,
+            open_dataset_folder,
+            hud_cancel,
+            hud_accept,
         ])
         .setup(|app| {
             let settings = settings::load(app.handle());
@@ -1709,7 +2090,7 @@ pub fn run() {
             let menu = Menu::with_items(app, &[&show, &panel, &quit])?;
 
             TrayIconBuilder::with_id(TRAY_ID)
-                .icon(app.default_window_icon().expect("ícone padrão").clone())
+                .icon(tray_icon_for(Status::Idle))
                 .tooltip("Fala — pronto")
                 .menu(&menu)
                 .show_menu_on_left_click(false)

@@ -1,5 +1,9 @@
-/* Painel "Versão limpa" — janela própria (label panel), vidro via windowEffects
-   nativo (hudWindow radius 20 no conf); o CSS só dá layout e tipografia. */
+/* ============================================================
+   FALA · Painel "Versão limpa" — DESIGN v2 (dark-only, tokens)
+   Janela própria (label panel), vidro via windowEffects nativo
+   (hudWindow radius 20 no conf); o CSS dá layout, tipografia e
+   micro-animações (tags com pop, realce verde na chegada do limpo).
+   ============================================================ */
 
 .panel-body {
   background: transparent !important;
@@ -13,118 +17,172 @@
   inset: 0;
   display: flex;
   flex-direction: column;
-  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
-  color: rgba(255, 255, 255, 0.92);
-  padding: 14px 14px 12px;
+  font-family: var(--font);
+  color: var(--t1);
+  padding: 12px 12px 10px;
   user-select: none;
+  font-size: 13.5px;
 }
 
+/* ---------- header ---------- */
 .panel-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 2px 4px 10px;
-  border-bottom: 0.5px solid rgba(255, 255, 255, 0.16);
+  gap: 8px;
+  padding: 4px 4px 10px;
+  border-bottom: 1px solid var(--hairline-soft);
 }
-
+.panel-glyph { flex: none; }
 .panel-title {
   font-size: 13px;
   font-weight: 600;
-  letter-spacing: 0.2px;
+  letter-spacing: 0.01em;
 }
-
-.panel-actions {
-  display: flex;
-  gap: 6px;
+.panel-cnt {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--t3);
 }
+.panel-sp { flex: 1; }
+.panel-actions { display: flex; gap: 6px; }
 
-.panel-actions button {
-  font-family: inherit;
-  font-size: 12px;
-  padding: 4px 10px;
-  border: 0.5px solid rgba(255, 255, 255, 0.22);
-  border-radius: 7px;
-  background: rgba(255, 255, 255, 0.08);
-  color: rgba(255, 255, 255, 0.92);
+.panel-btn {
+  font-size: 11.5px;
+  font-weight: 600;
+  font-family: var(--font);
+  color: var(--t1);
+  background: var(--bg3);
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  padding: 5px 11px;
   cursor: pointer;
-  transition: background 0.15s cubic-bezier(0.32, 0.72, 0, 1);
+  transition: all 0.18s var(--ease);
 }
+.panel-btn:hover:not(:disabled) { background: #242430; transform: translateY(-1px); }
+.panel-btn:active:not(:disabled) { transform: translateY(0) scale(0.97); }
+.panel-btn:disabled { opacity: 0.4; cursor: default; }
+.panel-primary { background: var(--accent); color: #0b0b0e; border-color: transparent; }
+.panel-primary:hover:not(:disabled) { background: var(--accent); filter: brightness(1.08); transform: translateY(-1px); }
+.panel-primary:disabled { background: var(--bg3); color: var(--t3); }
 
-.panel-actions button:hover:not(:disabled) { background: rgba(255, 255, 255, 0.16); }
-.panel-actions button:active:not(:disabled) { background: rgba(255, 255, 255, 0.24); }
-.panel-actions button:disabled { opacity: 0.4; cursor: default; }
-
-.panel-actions .panel-danger { color: #ff9f0a; }
-
+/* ---------- lista ---------- */
 .panel-scroll {
   flex: 1;
   overflow-y: auto;
-  padding: 10px 4px 4px;
   user-select: text;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(255, 255, 255, 0.2) transparent;
+  padding-top: 4px;
 }
-
 .panel-scroll::-webkit-scrollbar { width: 5px; }
-.panel-scroll::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.2);
-  border-radius: 3px;
-}
-
-.panel-empty {
-  margin: 24px 8px;
-  font-size: 12.5px;
-  line-height: 1.55;
-  color: rgba(255, 255, 255, 0.45);
-}
+.panel-scroll::-webkit-scrollbar-thumb { background: var(--bg3); border-radius: 3px; }
+.panel-scroll::-webkit-scrollbar-track { background: transparent; }
 
 .panel-seg {
-  margin: 0 0 10px;
-  font-size: 13.5px;
-  line-height: 1.6;
-  animation: panel-in 0.28s cubic-bezier(0.32, 0.72, 0, 1);
+  padding: 12px 4px 10px;
+  border-bottom: 1px solid var(--hairline-soft);
+  animation: panel-in 0.28s var(--ease) backwards;
 }
-
-/* chegada da versão limpa: realce verde que assenta no branco */
-.panel-seg:not(.pending) {
-  animation: panel-clean 0.7s cubic-bezier(0.32, 0.72, 0, 1);
-}
-
-@keyframes panel-clean {
-  0% { color: rgba(48, 209, 88, 0.95); }
-  100% { color: rgba(255, 255, 255, 0.92); }
-}
-
-.panel-seg.pending {
-  opacity: 0.5;
-}
-
-.panel-seg.pending::after {
-  content: " ⋯";
-  animation: panel-pulse 1.2s ease-in-out infinite;
-  color: rgba(255, 255, 255, 0.4);
-}
-
 @keyframes panel-in {
   from { opacity: 0; transform: translateY(6px); }
-  to { opacity: 1; transform: translateY(0); }
 }
 
+.panel-txt { font-size: 13.5px; line-height: 1.6; }
+.panel-seg.pending .panel-txt { color: var(--t3); }
+.panel-seg.pending .panel-txt::after { content: " ⋯"; }
+
+.panel-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+.panel-tag {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.6px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  animation: panel-tagin 0.4s var(--spring) backwards;
+}
+@keyframes panel-tagin { from { opacity: 0; transform: scale(0.8); } }
+.panel-tag.clean { color: var(--ok); background: rgba(61, 220, 151, 0.08); }
+.panel-tag.raw { color: var(--busy); background: rgba(255, 180, 84, 0.08); }
+.panel-chars { font-family: var(--mono); font-size: 10.5px; color: var(--t3); }
+
+/* realce verde quando o limpo chega */
+.panel-seg.hl .panel-txt {
+  border-radius: 6px;
+  animation: panel-hlflash 1.2s var(--ease);
+}
+@keyframes panel-hlflash {
+  0% { background: rgba(61, 220, 151, 0.14); }
+  100% { background: transparent; }
+}
+
+/* pendente: pulso discreto nos pontinhos */
+.panel-seg.pending .panel-txt::after {
+  animation: panel-pulse 1.2s var(--ease) infinite;
+}
 @keyframes panel-pulse {
-  0%, 100% { opacity: 0.35; }
-  50% { opacity: 0.9; }
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 1; }
 }
 
+/* ---------- empty state ---------- */
+.panel-empty {
+  text-align: center;
+  padding: 44px 20px;
+  color: var(--t2);
+  font-size: 12.5px;
+}
+.panel-empty-ic {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  margin: 0 auto 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg3);
+  color: var(--t3);
+  animation: panel-floaty 3.4s var(--ease) infinite;
+}
+@keyframes panel-floaty {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-5px); }
+}
+.panel-empty-t { font-weight: 600; font-size: 13.5px; color: var(--t1); }
+.panel-empty-s { margin-top: 6px; line-height: 1.6; }
+.panel-empty-s kbd {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--t1);
+  background: var(--bg3);
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  padding: 1px 7px;
+  margin: 0 2px;
+}
+
+/* ---------- toast interno ---------- */
 .panel-toast {
   position: fixed;
   bottom: 14px;
   left: 50%;
   transform: translateX(-50%);
-  font-size: 12px;
+  font-family: var(--mono);
+  font-size: 11.5px;
   padding: 6px 14px;
-  border-radius: 999px;
-  background: rgba(48, 209, 88, 0.22);
-  border: 0.5px solid rgba(48, 209, 88, 0.4);
-  color: rgba(255, 255, 255, 0.95);
-  animation: panel-in 0.2s cubic-bezier(0.32, 0.72, 0, 1);
+  border-radius: var(--r-pill);
+  background: rgba(61, 220, 151, 0.14);
+  border: 1px solid rgba(61, 220, 151, 0.4);
+  color: var(--ok);
+  animation: panel-in 0.2s var(--ease);
+  white-space: nowrap;
+  z-index: 2;
+}
+
+/* Windows: material opaco (o hudWindow nativo não existe lá) */
+html.win .panel {
+  background: rgba(18, 18, 23, 0.97);
+  border-left: 1px solid var(--hairline-soft);
 }

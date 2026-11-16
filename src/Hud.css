@@ -1,17 +1,14 @@
 /* ============================================================
-   Fala — HUD · Liquid Glass do macOS 26 (sempre escuro nos dois modos)
-   O material do sistema (liquidGlassRegular, radius 38 no conf) já vem
-   em forma de cápsula; o CSS só adiciona tint, aresta e reflexos.
-   A cápsula cobre a janela INTEIRA — nenhum retângulo sobrando.
+   FALA · HUD — DESIGN v2 · cápsula viva que morfa entre estados
+   Tokens em src/tokens.css · geometria fixa 252×46 (radius 23 no conf)
+   Todas as cápsulas ficam empilhadas; a classe .on ativa o estado.
    ============================================================ */
 
 :root {
-  --ease-out: cubic-bezier(0.32, 0.72, 0, 1);
   --hud-slot-w: 252px;
-  --hud-slot-h: 52px;
+  --hud-slot-h: 46px;
 }
 
-/* The HUD webview is a transparent, fixed-size surface over native Liquid Glass. */
 html,
 body,
 #root {
@@ -26,223 +23,188 @@ body,
   overflow: hidden;
 }
 
-.hud {
+.hud-root {
   position: fixed;
+  inset: 0;
+  opacity: 1;
+  transition: opacity 0.28s var(--ease);
+}
+.hud-root.hud-leaving { opacity: 0; }
+
+.hud-wrap {
+  position: absolute;
+  inset: 0;
+}
+
+/* ---------- a cápsula (empilhada, morfando) ---------- */
+.hud {
+  position: absolute;
   inset: 0;
   display: flex;
   align-items: center;
   justify-content: center;
   overflow: hidden;
-  color: rgba(255, 255, 255, 0.92);
-  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
-  font-size: 13px;
+  color: var(--t1);
+  font-family: var(--font);
+  font-size: 12.5px;
   font-weight: 500;
   letter-spacing: 0.1px;
   user-select: none;
   cursor: default;
-  opacity: 1;
-  animation: hud-in 0.34s var(--ease-out) both;
-  transition: opacity 0.28s var(--ease-out);
+  background: rgba(23, 23, 29, 0.92);
+  border-radius: var(--r-pill);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.07),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.02),
+    0 8px 28px rgba(0, 0, 0, 0.45);
+  opacity: 0;
+  transform: translateY(14px) scale(0.92);
+  pointer-events: none;
+  transition:
+    opacity 0.32s var(--ease),
+    transform 0.5s cubic-bezier(0.22, 1.4, 0.36, 1),
+    box-shadow 0.4s var(--ease);
 }
-
-/* Native Liquid Glass owns the surface; CSS only adds an almost invisible edge. */
-.hud::before {
+.hud.on {
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+}
+.hud::after {
   content: "";
   position: absolute;
   inset: 0;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.045);
-  border: 0.5px solid rgba(255, 255, 255, 0.22);
-  box-shadow:
-    inset 0 0.5px 0 rgba(255, 255, 255, 0.28),
-    inset 0 -0.5px 0 rgba(255, 255, 255, 0.06);
+  border-radius: var(--r-pill);
+  border: 1px solid rgba(255, 255, 255, 0.10);
   pointer-events: none;
 }
+.hud.hud-rec  { box-shadow: inset 0 1px 0 rgba(255,255,255,0.07), 0 8px 28px rgba(0,0,0,0.45), 0 0 0 1px rgba(255,92,92,0.35); }
+.hud.hud-pol  { box-shadow: inset 0 1px 0 rgba(255,255,255,0.07), 0 8px 28px rgba(0,0,0,0.45), 0 0 0 1px rgba(242,125,168,0.30); }
+.hud.hud-ok   { box-shadow: inset 0 1px 0 rgba(255,255,255,0.07), 0 8px 28px rgba(0,0,0,0.45), 0 0 0 1px rgba(61,220,151,0.30); }
+.hud.hud-err  { box-shadow: inset 0 1px 0 rgba(255,255,255,0.07), 0 8px 28px rgba(0,0,0,0.45), 0 0 0 1px rgba(229,72,77,0.35); }
 
-/* Never scale the shell: scaling it reveals transparent/native margins. */
-.hud-leaving {
-  opacity: 0;
-  transition: opacity 0.28s var(--ease-out);
+/* conteúdo entra em cascata com mola quando o estado ativa.
+   IMPORTANTE: sem regra base de opacity:0 — o fill `backwards` já aplica o
+   frame inicial durante o delay da cascata; com fill `backwards` apenas,
+   o elemento volta ao estado natural (visível) quando a animação termina. */
+.hud.on .hud-state > * { animation: stin 0.5s cubic-bezier(0.22, 1.4, 0.36, 1) backwards; }
+.hud.on .hud-state > *:nth-child(1) { animation-delay: 0.05s; }
+.hud.on .hud-state > *:nth-child(2) { animation-delay: 0.11s; }
+.hud.on .hud-state > *:nth-child(3) { animation-delay: 0.17s; }
+.hud.on .hud-state > *:nth-child(4) { animation-delay: 0.23s; }
+@keyframes stin {
+  from { opacity: 0; transform: translateY(7px) scale(0.88); }
+  to   { opacity: 1; transform: none; }
 }
+/* o spinner mantém o giro próprio */
+.hud.on .hud-state > .hud-ring { animation: hud-spin 0.8s linear infinite; }
 
-@keyframes hud-in {
-  from { opacity: 0; }
-  to   { opacity: 1; }
-}
-
-/* One fixed visual slot prevents the capsule from appearing to contract between states. */
-.hud-content {
-  position: relative;
-  z-index: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: var(--hud-slot-w);
-  min-width: var(--hud-slot-w);
-  height: var(--hud-slot-h);
-  min-height: var(--hud-slot-h);
-  gap: 12px;
-  animation: hud-content-in 0.28s var(--ease-out) both;
-}
-
-@keyframes hud-content-in {
-  from { opacity: 0; transform: translateY(3px); filter: blur(2px); }
-  to   { opacity: 1; transform: translateY(0); filter: blur(0); }
-}
-
-/* State content enters without changing the native shell geometry. */
-.hud-content > * {
-  animation: hud-state-in 0.32s var(--ease-out) both;
-}
-
-@keyframes hud-state-in {
-  from { opacity: 0; transform: translateY(3px); }
-  to   { opacity: 1; transform: translateY(0); }
-}
-
-/* --- gravando: pulso vermelho (systemRed) + waveform branca --- */
-.hud-dot {
-  flex: none;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: #ff453a;
-  animation: hud-pulse 1.15s ease-in-out infinite;
-}
-
-@keyframes hud-pulse {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(255, 69, 58, 0.45); }
-  50%      { box-shadow: 0 0 0 6px rgba(255, 69, 58, 0); }
-}
-
-.hud-recording-content {
-  display: flex;
-  align-items: center;
-  width: 100%;
-  gap: 10px;
-}
-
-.hud-wave { display: block; width: 188px; height: 48px; }
-
-.hud-timer {
-  flex: 0 0 32px;
-  color: rgba(255, 255, 255, 0.68);
-  font: 500 10px/1 ui-monospace, "SF Mono", SFMono-Regular, Menlo, monospace;
-  font-variant-numeric: tabular-nums;
-  letter-spacing: 0.2px;
-  text-align: right;
-}
-
-/* The meter has a calm baseline while listening, never a dead/static gap. */
-.hud-recording .hud-wave { opacity: 0.98; }
-.hud-recording .hud-content::after {
-  content: "";
-  position: absolute;
-  inset: 5px 2px;
-  border-radius: 999px;
-  pointer-events: none;
-  background: linear-gradient(90deg, rgba(255,255,255,0.04), transparent 18%, transparent 82%, rgba(255,255,255,0.04));
-  opacity: 0.7;
-  animation: hud-scan 2.8s var(--ease-out) infinite;
-}
-
-@keyframes hud-scan {
-  0%, 100% { opacity: 0.25; transform: scaleX(0.96); }
-  50% { opacity: 0.72; transform: scaleX(1); }
-}
-
-/* --- transcrevendo --- */
-.hud-transcribing {
-  display: inline-flex;
-  align-items: center;
-  gap: 9px;
-  color: rgba(255, 255, 255, 0.92);
-  letter-spacing: 0.2px;
-}
-
-.hud-spinner {
-  flex: none;
-  width: 15px;
-  height: 15px;
-  border-radius: 50%;
-  background: conic-gradient(
-    rgba(255, 255, 255, 0.95) 0 92deg,
-    rgba(255, 255, 255, 0.18) 92deg 360deg
-  );
-  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 calc(100% - 1.6px));
-  mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 calc(100% - 1.6px));
-  animation: hud-spin 0.9s linear infinite;
-}
-
-@keyframes hud-spin { to { transform: rotate(360deg); } }
-
-/* --- done: check systemGreen com pop --- */
-.hud-done {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  color: #30d158;
-  font-weight: 600;
-  animation: hud-pop 0.45s cubic-bezier(0.34, 1.56, 0.64, 1);
-}
-
-.hud-done svg { flex: none; animation: hud-pop 0.5s cubic-bezier(0.34, 1.56, 0.64, 1); }
-
-@keyframes hud-pop {
-  0%   { transform: scale(0.5); opacity: 0; }
-  100% { transform: scale(1); opacity: 1; }
-}
-
-/* --- erro --- */
-.hud-error {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  max-width: 210px;
+.hud-state { display: flex; align-items: center; gap: 10px; }
+.hud-lab { font-size: 13px; font-weight: 500; letter-spacing: 0.01em; }
+.hud-lab-ok { color: var(--ok); font-weight: 600; }
+.hud-lab-2 { color: var(--t2); }
+.hud-lab-trunc {
+  max-width: 168px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 12px;
-  color: rgba(255, 255, 255, 0.92);
+}
+.hud-mono {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--t3);
+  font-variant-numeric: tabular-nums;
 }
 
-.hud-error svg { flex: none; color: #ff9f0a; }  /* systemOrange */
-
-/* --- idle --- */
-.hud-idle .hud-content { color: rgba(255, 255, 255, 0.62); font-weight: 600; letter-spacing: 0.3px; }
-
-@media (prefers-reduced-motion: reduce) {
-  * { animation: none !important; transition: none !important; }
+/* dots */
+.hud-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.hud-dot-idle { background: var(--accent); animation: hud-breathe 2.6s var(--ease) infinite; }
+@keyframes hud-breathe {
+  0%, 100% { opacity: 0.5;  transform: scale(1); }
+  50%      { opacity: 0.95; transform: scale(1.22); }
 }
 
-/* chip de feedback (comandos de voz) — flutua acima da cápsula sem mudar estado */
+/* botões da cápsula */
+.hbtn {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--t1);
+  padding: 0;
+  transition: background 0.15s var(--ease), color 0.15s var(--ease), transform 0.2s var(--spring);
+}
+.hbtn:hover { transform: scale(1.1); }
+.hbtn:active { transform: scale(0.9); }
+.hbtn-x:hover { background: var(--err); color: #fff; }
+.hbtn-ok { background: rgba(255, 255, 255, 0.9); color: #17171d; font-weight: 700; }
+.hbtn-ok:hover { background: var(--ok); color: #0b0b0e; }
+
+/* waveform canvas */
+.hud-wave { display: block; width: 120px; height: 26px; }
+
+/* spinner técnico (anel) */
+.hud-ring {
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  flex: none;
+  border: 2px solid var(--hairline);
+  border-top-color: var(--busy);
+  animation: hud-spin 0.8s linear infinite;
+}
+.hud-ring-pol { border-top-color: var(--polish); }
+@keyframes hud-spin { to { transform: rotate(360deg); } }
+
+/* polindo: varredura rosa na aresta */
+.hud.hud-pol::before {
+  content: "";
+  position: absolute;
+  inset: 1px;
+  border-radius: var(--r-pill);
+  background: linear-gradient(100deg, transparent 20%, rgba(242, 125, 168, 0.10) 50%, transparent 80%);
+  background-size: 220% 100%;
+  animation: hud-sweep 2.2s var(--ease) infinite;
+  pointer-events: none;
+}
+@keyframes hud-sweep {
+  0% { background-position: 120% 0; }
+  100% { background-position: -120% 0; }
+}
+
+/* chip de feedback — flutua acima da cápsula com mola */
 .hud-chip {
   position: absolute;
-  top: -34px;
+  top: -30px;
   left: 50%;
   transform: translateX(-50%);
   white-space: nowrap;
-  font-size: 12px;
+  font-family: var(--mono);
+  font-size: 11.5px;
   padding: 5px 12px;
-  border-radius: 999px;
-  background: rgba(18, 18, 22, 0.88);
-  border: 0.5px solid rgba(255, 255, 255, 0.18);
-  color: rgba(255, 255, 255, 0.95);
-  animation: hud-in 0.2s var(--ease-out);
+  border-radius: var(--r-pill);
+  background: #202028;
+  border: 1px solid var(--hairline);
+  color: var(--t1);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.35);
+  z-index: 2;
+  animation: hud-chipin 0.55s var(--spring) backwards;
+}
+@keyframes hud-chipin {
+  from { opacity: 0; transform: translateX(-50%) translateY(10px) scale(0.85); }
+  to   { opacity: 1; transform: translateX(-50%) translateY(0) scale(1); }
 }
 
 /* ============================================================
-   Windows — material da cápsula (macOS intocado)
-   O Liquid Glass nativo não existe no Windows: a cápsula ficaria
-   invisível (só a hairline). O CSS passa a fornecer o material,
-   escuro como no macOS, sem alterar geometria ou tamanho do slot.
+   Windows — material opaco da cápsula (o Liquid Glass nativo não existe)
    ============================================================ */
 
-html.win .hud::before {
-  background: rgba(28, 28, 30, 0.88);
-  border: 0.5px solid rgba(255, 255, 255, 0.16);
-  box-shadow:
-    0 10px 32px rgba(0, 0, 0, 0.38),
-    inset 0 0.5px 0 rgba(255, 255, 255, 0.22),
-    inset 0 -0.5px 0 rgba(0, 0, 0, 0.20);
+html.win .hud {
+  background: rgba(23, 23, 29, 0.96);
+  border: 0.5px solid rgba(255, 255, 255, 0.14);
 }
