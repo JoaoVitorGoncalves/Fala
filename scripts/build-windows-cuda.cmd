@@ -11,3 +11,9 @@ set "PATH=%CUDA_PATH%\bin;%PATH%"
 call "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
 cd /d "%~dp0.."
 pnpm tauri build
+if exist "%CUDA_PATH%\bin\cublas64_12.dll" (
+    copy /y "%CUDA_PATH%\bin\*.dll" "%~dp0..\src-tauri\target\release\" >nul
+)
+if exist "%~dp0sign-windows.ps1" (
+    powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0sign-windows.ps1"
+)

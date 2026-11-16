@@ -1,0 +1,13 @@
+# Dependências para Fine-Tuning do Whisper com LoRA (Windows CUDA / Linux)
+torch>=2.2.0
+torchaudio>=2.2.0
+transformers>=4.40.0
+peft>=0.10.0
+bitsandbytes>=0.43.0
+datasets>=2.19.0
+accelerate>=0.30.0
+soundfile>=0.12.1
+evaluate>=0.4.2
+jiwer>=3.0.4
+tqdm>=4.66.0
+pandas>=2.2.0

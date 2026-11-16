@@ -76,6 +76,12 @@ pub fn copy_to_clipboard(text: &str) -> Result<(), String> {
         .map_err(|e| format!("set_text: {e}"))
 }
 
+/// Executa a cópia persistente para a área de transferência na main thread.
+pub fn copy_to_clipboard_on_main(app: &AppHandle, text: &str) -> Result<(), String> {
+    let text = text.to_string();
+    on_main(app, move || copy_to_clipboard(&text)).and_then(|r| r)
+}
+
 fn paste_via_clipboard(app: &AppHandle, text: &str) -> Result<(), String> {
     use arboard::Clipboard;
 

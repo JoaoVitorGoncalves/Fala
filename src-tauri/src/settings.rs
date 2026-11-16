@@ -33,6 +33,8 @@ pub struct Settings {
     pub live_model_path: Option<String>,
     /// Modo reunião: capturar SEM colar — tudo acumula no painel "versão limpa"
     pub meeting_mode: bool,
+    /// Salvar áudio e transcrição no dataset local para fine-tuning (~/.fala/dataset)
+    pub save_dataset: bool,
     /// IA remota + perfil de personalização compartilhado (None = desativada)
     pub ai: Option<AiSettings>,
 }
@@ -98,6 +100,7 @@ impl Default for Settings {
             live_transcribe: true,
             live_model_path: None,
             meeting_mode: false,
+            save_dataset: false,
             ai: None,
         }
     }
@@ -150,7 +153,7 @@ pub fn live_model_path_or_default(settings: &Settings) -> Option<String> {
         .map(|p| p.to_string_lossy().into_owned())
 }
 
-fn dirs_home() -> Option<PathBuf> {
+pub fn dirs_home() -> Option<PathBuf> {
     std::env::var_os("HOME").map(PathBuf::from).or_else(|| {
         // Windows sem HOME: usa USERPROFILE
         std::env::var_os("USERPROFILE").map(PathBuf::from)

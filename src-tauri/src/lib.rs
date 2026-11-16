@@ -2,6 +2,7 @@
 // Segure o atalho global → grava; solte → transcreve com whisper.cpp local → cola no app focado.
 
 mod audio;
+mod dataset;
 mod inject;
 mod live;
 mod llm;
@@ -70,6 +71,7 @@ struct SessionConfig {
     corrections: Option<String>,
     ai: Option<settings::AiSettings>,
     meeting_mode: bool,
+    save_dataset: bool,
     delivery: DeliveryMode,
 }
 
@@ -87,6 +89,7 @@ impl SessionConfig {
             corrections: settings.corrections.clone(),
             ai: settings.ai.clone(),
             meeting_mode: settings.meeting_mode,
+            save_dataset: settings.save_dataset,
             delivery: DeliveryMode::from_settings(&settings.paste_mode, settings.meeting_mode),
         })
     }
@@ -305,7 +308,7 @@ fn deliver_final_text(
     text: &str,
 ) -> Result<(), String> {
     match delivery {
-        DeliveryMode::Clipboard => inject::copy_to_clipboard(text),
+        DeliveryMode::Clipboard => inject::copy_to_clipboard_on_main(app, text),
         DeliveryMode::Direct => inject::paste_text(app, text, "type"),
         DeliveryMode::Meeting => Ok(()),
     }
@@ -880,6 +883,23 @@ fn stop_recording_and_transcribe(app: &AppHandle) {
                         Err(error) => hud_chip(&app, &format!("Comando falhou: {error}")),
                     }
                 }
+                // Coleta assíncrona para dataset de fine-tuning (opt-in, congelado
+                // por sessão). Sessões só-comando não geram amostra; o texto é o
+                // ditado completo da sessão (live + cauda já mesclados nos modos
+                // adiados).
+                if !command_only && config.save_dataset && had_speech && !mic_stalled {
+                    let ds_full = if deferred_delivery || live.committed_text.is_empty() {
+                        text.clone()
+                    } else {
+                        append_session_text(&live.committed_text, &text)
+                    };
+                    if !ds_full.trim().is_empty() {
+                        let ds_samples = samples.clone();
+                        std::thread::spawn(move || {
+                            let _ = dataset::save_sample(&ds_samples, &ds_full, None);
+                        });
+                    }
+                }
                 if command_only {
                     let message = command_feedback
                         .and_then(|feedback| feedback.ok())
@@ -1280,6 +1300,8 @@ struct SettingsInfo {
     live_model_available: bool,
     /// caminho resolvido do modelo rápido ("" se ausente)
     live_model_path: String,
+    /// estatísticas do dataset de fine-tuning
+    dataset_stats: dataset::DatasetStats,
 }
 
 /// Espera curta pelo estado (até ~2s): com a WebView2 quente a UI pode invocar
@@ -1308,6 +1330,7 @@ fn get_settings(app: AppHandle) -> Result<SettingsInfo, String> {
         accessibility: inject::accessibility_status(),
         live_model_available: live_path.is_some(),
         live_model_path: live_path.unwrap_or_default(),
+        dataset_stats: dataset::get_stats(),
         settings,
     })
 }
@@ -1436,6 +1459,20 @@ fn panel_clear(app: AppHandle) -> Result<(), String> {
     state.panel.lock().unwrap().clear();
     emit_panel(&app);
     Ok(())
+}
+
+#[tauri::command]
+fn dataset_stats() -> dataset::DatasetStats {
+    dataset::get_stats()
+}
+
+#[tauri::command]
+fn open_dataset_folder(app: AppHandle) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    let dir = dataset::ensure_dataset_dir()?;
+    app.opener()
+        .open_path(dir.to_string_lossy().as_ref(), None::<&str>)
+        .map_err(|e| e.to_string())
 }
 
 // ---------------------------------------------------------------- comandos de voz
@@ -1987,6 +2024,8 @@ pub fn run() {
             panel_state,
             panel_copy,
             panel_clear,
+            dataset_stats,
+            open_dataset_folder,
             hud_cancel,
             hud_accept,
         ])
