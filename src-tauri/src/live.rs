@@ -1,11 +1,13 @@
 // Transcrição em tempo real por COMMITS: cada pausa da fala fecha um trecho,
-// o trecho é decodificado UMA vez e digitado — é texto final, nunca mais
-// revisitado. Com Metal ativo (macOS) os trechos usam o MODELO GRANDE (a
+// o trecho é decodificado UMA vez. No modo direto sem IA, ele é digitado como
+// texto final; em Clipboard, reunião ou enquanto a IA aguarda, fica acumulado
+// até a entrega final. Com Metal ativo (macOS) os trechos usam o MODELO GRANDE (a
 // latência fica abaixo do small-na-CPU da v1); sem GPU, o lib.rs aponta o
 // worker para o modelo rápido dedicado. Fala contínua força o fechamento num
 // teto (corte no ponto mais silencioso recente) para manter cada decode curto.
-// Ao soltar o atalho, só a cauda aberta é revisada (lib.rs). Nada do que já
-// foi digitado é apagado nem re-transcrito. O Silero VAD (opcional) refina as
+// Ao soltar o atalho, só a cauda aberta é revisada (lib.rs), e os modos
+// adiados juntam tudo antes de entregar. Nada do que já foi confirmado é
+// apagado nem re-transcrito. O Silero VAD (opcional) refina as
 // bordas de cada trecho e descarta os sem fala nenhuma.
 
 use std::sync::atomic::Ordering;
@@ -15,7 +17,7 @@ use whisper_rs::{WhisperVadContext, WhisperVadContextParams, WhisperVadParams};
 
 use crate::audio::{self, RecorderHandle};
 use crate::inject;
-use crate::{AppState, Status, apply_corrections, diag};
+use crate::{AppState, DeliveryMode, Status, apply_corrections, diag};
 
 const TICK: Duration = Duration::from_millis(120);
 /// Pausa que fecha um trecho e o confirma (bem abaixo do auto-stop `silence_ms`)
@@ -32,10 +34,12 @@ const VOICE_RMS: f32 = 0.006;
 const PROMPT_CHARS: usize = 224;
 
 pub struct LiveResult {
-    /// Texto confirmado e digitado (diagnóstico + semântica da sessão).
+    /// Texto confirmado pelo worker; pode ter sido digitado ou apenas acumulado.
     pub committed_text: String,
     /// Número de amostras 16 kHz já confirmadas pelo live worker.
     pub committed_samples: usize,
+    /// Houve fala reconhecida ou comando executado nesta sessão.
+    pub activity: bool,
 }
 
 pub fn spawn(
@@ -47,6 +51,8 @@ pub fn spawn(
     corrections: Option<String>,
     generation: u64,
     meeting_mode: bool,
+    delivery: DeliveryMode,
+    ai_enabled: bool,
 ) -> std::thread::JoinHandle<LiveResult> {
     std::thread::spawn(move || {
         run(
@@ -58,6 +64,8 @@ pub fn spawn(
             corrections,
             generation,
             meeting_mode,
+            delivery,
+            ai_enabled,
         )
     })
 }
@@ -71,6 +79,8 @@ fn run(
     corrections: Option<String>,
     generation: u64,
     meeting_mode: bool,
+    delivery: DeliveryMode,
+    ai_enabled: bool,
 ) -> LiveResult {
     let rate = audio_handle.sample_rate();
 
@@ -97,6 +107,7 @@ fn run(
     let mut samples16k: Vec<f32> = Vec::new();
     let mut committed_until: usize = 0;
     let mut committed_text = String::new();
+    let mut activity = false;
     // última voz vista: índice da amostra e o instante (para medir a pausa)
     let mut last_voice_idx: usize = 0;
     let mut last_voice_at: Option<Instant> = None;
@@ -198,6 +209,7 @@ fn run(
             committed_until = boundary;
             continue;
         }
+        activity = true;
         // comando de voz: o parser mantém prefixos entre chunks.
         match crate::command_decision(&app, &text) {
             crate::CommandDecision::Pending => {
@@ -206,8 +218,14 @@ fn run(
                 continue;
             }
             crate::CommandDecision::Execute(cmd) => {
+                activity = true;
                 committed_until = boundary;
-                match crate::execute_command(&app, cmd) {
+                let feedback = if meeting_mode || delivery.defers_live(ai_enabled) {
+                    crate::apply_buffer_command(&mut committed_text, cmd)
+                } else {
+                    crate::execute_command(&app, cmd)
+                };
+                match feedback {
                     Ok(feedback) => {
                         diag(&format!("live: comando executado: {feedback}"));
                         crate::hud_chip(&app, feedback);
@@ -225,15 +243,14 @@ fn run(
                     committed_until = boundary;
                     continue;
                 }
-                // modo reunião é congelado no início da sessão: salvar settings durante
-                // a gravação nunca alterna entre colar e capturar.
-                if meeting_mode {
+                // Clipboard, reunião e IA aguardando polimento acumulam o texto
+                // em memória. Nada parcial pode aparecer no app focado.
+                if meeting_mode || delivery.defers_live(ai_enabled) {
                     committed_text.push_str(&format!(
                         "{}{text}",
                         if committed_text.is_empty() { "" } else { " " }
                     ));
                     committed_until = boundary;
-                    crate::enqueue_polish(&app, text.clone());
                     continue;
                 }
                 let sep = if committed_text.is_empty() { "" } else { " " };
@@ -253,9 +270,6 @@ fn run(
                     .unwrap()
                     .push(to_type.chars().count());
                 committed_until = boundary;
-                // versão limpa: o trecho cru vai para o worker de polimento async —
-                // nunca bloqueia a digitação do próximo trecho
-                crate::enqueue_polish(&app, text.clone());
             }
         }
     }
@@ -263,6 +277,7 @@ fn run(
     LiveResult {
         committed_text,
         committed_samples: committed_until,
+        activity,
     }
 }
 

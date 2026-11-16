@@ -60,8 +60,8 @@ pub struct AiSettings {
     pub sync_profile: bool,
     /// Prompt de sistema do polimento (sincronizado com o servidor)
     pub system_prompt: Option<String>,
-    /// Esperar o polimento IA antes de colar (default: cola rápido; a versão
-    /// limpa vai async para o painel/evento clean-version)
+    /// Campo legado mantido para compatibilidade com settings.json antigos.
+    /// A entrega agora sempre aguarda o polimento quando a IA está ativa.
     pub polish_before_paste: bool,
 }
 
