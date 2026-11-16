@@ -1,6 +1,7 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import "./tokens.css";
 import App from "./App";
 import Hud from "./Hud";
 import TranscriptPanel from "./TranscriptPanel";

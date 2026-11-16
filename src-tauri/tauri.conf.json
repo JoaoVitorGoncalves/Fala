@@ -31,8 +31,8 @@
       {
         "label": "hud",
         "title": "Fala",
-        "width": 240,
-        "height": 60,
+        "width": 252,
+        "height": 46,
         "visible": false,
         "decorations": false,
         "transparent": true,
@@ -44,7 +44,7 @@
         "theme": "Dark",
         "windowEffects": {
           "effects": ["liquidGlassClear"],
-          "radius": 30
+          "radius": 23
         }
       },
       {
