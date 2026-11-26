@@ -186,3 +186,9 @@ html.win .panel {
   background: rgba(18, 18, 23, 0.97);
   border-left: 1px solid var(--hairline-soft);
 }
+@media (prefers-reduced-transparency: reduce) {
+  .panel {
+    background: rgba(18, 18, 23, 0.97);
+    border-left: 1px solid var(--hairline-soft);
+  }
+}

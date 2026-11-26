@@ -119,12 +119,19 @@ def main():
         print("Execute primeiro: python prepare_dataset.py")
         return
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    if torch.cuda.is_available():
+        device = "cuda"
+    elif getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
+        device = "mps"
+    else:
+        device = "cpu"
     print(f"=== Treinamento Whisper LoRA ===")
     print(f"Dispositivo: {device}")
     if device == "cuda":
         print(f"GPU: {torch.cuda.get_device_name(0)}")
         print(f"VRAM Total: {torch.cuda.get_device_properties(0).total_memory / 1e9:.2f} GB")
+    elif device == "mps":
+        print("GPU: Apple Silicon (Metal Performance Shaders)")
 
     print(f"Carregando processador ({args.model_id})...")
     processor = WhisperProcessor.from_pretrained(

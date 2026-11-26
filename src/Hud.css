@@ -208,3 +208,9 @@ html.win .hud {
   background: rgba(23, 23, 29, 0.96);
   border: 0.5px solid rgba(255, 255, 255, 0.14);
 }
+@media (prefers-reduced-transparency: reduce) {
+  .hud {
+    background: rgba(23, 23, 29, 0.96);
+    border: 0.5px solid rgba(255, 255, 255, 0.14);
+  }
+}

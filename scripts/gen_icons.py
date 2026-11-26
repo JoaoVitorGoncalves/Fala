@@ -12,6 +12,9 @@ Saídas:
 Uso: python scripts/gen_icons.py
 """
 
+import shutil
+import subprocess
+import tempfile
 from pathlib import Path
 
 from PIL import Image, ImageDraw
@@ -166,6 +169,28 @@ def main():
     for state in STATE_COLORS:
         draw_tray_icon(state, SS).resize((32, 32), Image.LANCZOS).save(ICONS / "tray" / f"tray-{state}.png")
     print("tray: tray-{idle,rec,busy,polish,ok,err}.png OK")
+
+    iconutil = shutil.which("iconutil")
+    if iconutil:
+        with tempfile.TemporaryDirectory() as tmp:
+            iconset = Path(tmp) / "Fala.iconset"
+            iconset.mkdir()
+            icns_sizes = [
+                ("icon_16x16.png", 16),
+                ("icon_16x16@2x.png", 32),
+                ("icon_32x32.png", 32),
+                ("icon_32x32@2x.png", 64),
+                ("icon_128x128.png", 128),
+                ("icon_128x128@2x.png", 256),
+                ("icon_256x256.png", 256),
+                ("icon_256x256@2x.png", 512),
+                ("icon_512x512.png", 512),
+                ("icon_512x512@2x.png", 1024),
+            ]
+            for fname, px in icns_sizes:
+                master.resize((px, px), Image.LANCZOS).save(iconset / fname)
+            subprocess.run([iconutil, "-c", "icns", str(iconset), "-o", str(ICONS / "icon.icns")], check=True)
+        print("macOS: icon.icns OK")
 
 
 if __name__ == "__main__":

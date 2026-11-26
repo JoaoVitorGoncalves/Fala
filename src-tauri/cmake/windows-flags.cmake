@@ -1,0 +1,13 @@
+# Aplicado via CMAKE_PROJECT_INCLUDE apenas quando compilando com MSVC no Windows.
+# No macOS (Clang / Apple Silicon) este bloco é ignorado e o CMake usa -O3 -DNDEBUG + Metal.
+if(WIN32 AND MSVC)
+    set(CMAKE_C_FLAGS_RELEASE "/MD /O2 /Ob2 /DNDEBUG" CACHE STRING "" FORCE)
+    set(CMAKE_CXX_FLAGS_RELEASE "/utf-8 /MD /O2 /Ob2 /DNDEBUG" CACHE STRING "" FORCE)
+    set(CMAKE_C_FLAGS_RELWITHDEBINFO "/MD /Zi /O2 /Ob2 /DNDEBUG" CACHE STRING "" FORCE)
+    set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "/utf-8 /MD /Zi /O2 /Ob2 /DNDEBUG" CACHE STRING "" FORCE)
+    set(GGML_SSE42 ON CACHE BOOL "" FORCE)
+    set(GGML_F16C ON CACHE BOOL "" FORCE)
+    set(GGML_FMA ON CACHE BOOL "" FORCE)
+    set(GGML_AVX ON CACHE BOOL "" FORCE)
+    set(GGML_AVX2 ON CACHE BOOL "" FORCE)
+endif()
