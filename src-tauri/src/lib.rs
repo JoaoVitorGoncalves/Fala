@@ -294,6 +294,33 @@ fn enqueue_resolved_panel(app: &AppHandle, raw: String, clean: Option<String>) {
 fn emit_delivery_complete(app: &AppHandle) {
     diag("delivery-complete emitido (entrega concluída; som de conclusão)");
     let _ = app.emit("delivery-complete", serde_json::json!({}));
+
+    // No macOS o HUD é não-focável e o WKWebView bloqueia autoplay de <audio>
+    // sem gesto do usuário; tocamos o WAV embutido direto via afplay.
+    #[cfg(target_os = "macos")]
+    {
+        std::thread::spawn(|| {
+            const COMPLETION_WAV: &[u8] = include_bytes!("../../public/sounds/completion.wav");
+            let Some(home) = fala_home() else {
+                return;
+            };
+            let path = home.join(".fala/completion.wav");
+            let needs_write = std::fs::metadata(&path)
+                .map(|m| m.len() != COMPLETION_WAV.len() as u64)
+                .unwrap_or(true);
+            if needs_write {
+                if let Some(dir) = path.parent() {
+                    let _ = std::fs::create_dir_all(dir);
+                }
+                if std::fs::write(&path, COMPLETION_WAV).is_err() {
+                    return;
+                }
+            }
+            let _ = std::process::Command::new("/usr/bin/afplay")
+                .arg(&path)
+                .spawn();
+        });
+    }
 }
 
 fn state_hud_current(app: &AppHandle, generation: u64) -> bool {

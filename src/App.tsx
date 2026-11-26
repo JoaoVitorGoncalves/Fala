@@ -97,38 +97,70 @@ const MODIFIER_CODES = new Set([
   "ShiftRight",
 ]);
 
-/** Converte o atalho salvo ("alt+space") em rótulo legível com símbolos do Mac. */
+/** Converte o atalho salvo ("alt+space") em rótulo legível no SO atual. */
 function prettyHotkey(hotkey: string): string {
-  const symbols: Record<string, string> = {
-    CTRL: "⌃ Ctrl",
-    CONTROL: "⌃ Ctrl",
-    ALT: "⌥ Option",
-    OPTION: "⌥ Option",
-    SHIFT: "⇧ Shift",
-    CMD: "⌘ Cmd",
-    COMMAND: "⌘ Cmd",
-    SUPER: "⌘ Cmd",
-    SPACE: "Espaço",
-    ENTER: "Enter",
-    TAB: "Tab",
-    BACKSPACE: "⌫",
-    DELETE: "⌦",
-    ARROWUP: "↑",
-    ARROWDOWN: "↓",
-    ARROWLEFT: "←",
-    ARROWRIGHT: "→",
-    COMMA: ",",
-    PERIOD: ".",
-    MINUS: "-",
-    EQUAL: "=",
-    SLASH: "/",
-    SEMICOLON: ";",
-    QUOTE: "'",
-    BACKQUOTE: "`",
-    BACKSLASH: "\\",
-    BRACKETLEFT: "[",
-    BRACKETRIGHT: "]",
-  };
+  const isWin = navigator.userAgent.includes("Windows NT");
+  const symbols: Record<string, string> = isWin
+    ? {
+        CTRL: "Ctrl",
+        CONTROL: "Ctrl",
+        ALT: "Alt",
+        OPTION: "Alt",
+        SHIFT: "Shift",
+        CMD: "Win",
+        COMMAND: "Win",
+        SUPER: "Win",
+        SPACE: "Espaço",
+        ENTER: "Enter",
+        TAB: "Tab",
+        BACKSPACE: "Backspace",
+        DELETE: "Del",
+        ARROWUP: "↑",
+        ARROWDOWN: "↓",
+        ARROWLEFT: "←",
+        ARROWRIGHT: "→",
+        COMMA: ",",
+        PERIOD: ".",
+        MINUS: "-",
+        EQUAL: "=",
+        SLASH: "/",
+        SEMICOLON: ";",
+        QUOTE: "'",
+        BACKQUOTE: "`",
+        BACKSLASH: "\\",
+        BRACKETLEFT: "[",
+        BRACKETRIGHT: "]",
+      }
+    : {
+        CTRL: "⌃ Ctrl",
+        CONTROL: "⌃ Ctrl",
+        ALT: "⌥ Option",
+        OPTION: "⌥ Option",
+        SHIFT: "⇧ Shift",
+        CMD: "⌘ Cmd",
+        COMMAND: "⌘ Cmd",
+        SUPER: "⌘ Cmd",
+        SPACE: "Espaço",
+        ENTER: "Enter",
+        TAB: "Tab",
+        BACKSPACE: "⌫",
+        DELETE: "⌦",
+        ARROWUP: "↑",
+        ARROWDOWN: "↓",
+        ARROWLEFT: "←",
+        ARROWRIGHT: "→",
+        COMMA: ",",
+        PERIOD: ".",
+        MINUS: "-",
+        EQUAL: "=",
+        SLASH: "/",
+        SEMICOLON: ";",
+        QUOTE: "'",
+        BACKQUOTE: "`",
+        BACKSLASH: "\\",
+        BRACKETLEFT: "[",
+        BRACKETRIGHT: "]",
+      };
   return hotkey
     .split("+")
     .map((token) => {
@@ -580,9 +612,11 @@ function App() {
                   </button>
                 </span>
               </div>
-              <p className="row-hint">
-                No Mac, a tecla <code>alt</code> é a ⌥ Option.
-              </p>
+              {isMac && (
+                <p className="row-hint">
+                  No Mac, a tecla <code>alt</code> é a ⌥ Option.
+                </p>
+              )}
               <div className="row">
                 <span className="row-icon t-rec">
                   <Sym d={IC.wave} />

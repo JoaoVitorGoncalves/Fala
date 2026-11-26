@@ -52,6 +52,18 @@ pip install torch torchvision torchaudio --index-url https://download.pytorch.or
 pip install -r requirements.txt
 ```
 
+No macOS (Apple Silicon / MPS):
+
+```bash
+cd ~/Projects/fala/training
+
+python3 -m venv venv
+source venv/bin/activate
+
+# PyTorch com suporte a MPS (Metal) — bitsandbytes não é necessário no Mac
+pip install torch torchaudio transformers peft datasets accelerate soundfile evaluate jiwer tqdm pandas
+```
+
 ---
 
 ## 3. Validação do Dataset
