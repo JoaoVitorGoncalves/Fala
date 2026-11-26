@@ -50,8 +50,10 @@ export default function Hud() {
   }, []);
 
   // Aviso curto quando uma entrega final chega ao clipboard ou ao campo focado.
+  // No macOS o backend já toca nativamente (WKWebView bloqueia autoplay sem foco).
   // A mesma instância é reutilizada para não sobrepor sons em sessões rápidas.
   useEffect(() => {
+    if (navigator.userAgent.includes("Macintosh")) return;
     const audio = new Audio("/sounds/completion.wav");
     audio.preload = "auto";
     audio.load();
@@ -235,7 +237,9 @@ export default function Hud() {
                   <rect x="8" y="2" width="8" height="4" rx="1" />
                   <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2" />
                 </svg>
-                <span className="hud-mono">Ctrl+V</span>
+                <span className="hud-mono">
+                  {navigator.userAgent.includes("Windows NT") ? "Ctrl+V" : "⌘V"}
+                </span>
               </>
             )}
             {done.mode === "meeting" && (
